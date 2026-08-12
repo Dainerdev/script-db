@@ -1,0 +1,21 @@
+# Entorno virtual
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Archivos generados
+diagnostico_base.xlsx
+
+# Excel de trabajo
+*.xlsx
+*.xls
+
+# Entornos y archivos del editor
+.vscode/
+.idea/
+
+# Variables de entorno
+.env
