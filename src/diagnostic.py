@@ -2,6 +2,7 @@ import unicodedata
 import pandas as pd
 import numpy as np
 import re
+from openpyxl import load_workbook
 
 
 # CONFIGURATION
@@ -73,10 +74,13 @@ def standarize_column_dates(serie):
     Function to standarize column dates
     """
     
-    # Convert the series to datetime, coercing errors and assuming day-first format
-    dates = pd.to_datetime(serie, errors="coerce", dayfirst=True)
+    # Ensure the series is of string type and remove leading/trailing whitespace 
+    serie = serie.astype(str).str.strip()
     
-    return dates.dt.strftime("%d-%m-%Y")
+    dates = pd.to_datetime(serie, errors="coerce", dayfirst=True, format="mixed")
+    
+    # Normalize to remove time component
+    return dates.dt.normalize()
 
 # IMPLMENTATION
 
@@ -108,6 +112,21 @@ def main():
 
     # Save the modified DataFrame to a new Excel file
     df.to_excel(ARCHIVE_DIAGNOSTIC, index=False)
+
+    wb = load_workbook(ARCHIVE_DIAGNOSTIC)
+    ws = wb.active
+    
+    # Search for the "Fecha" column
+    for cell in ws[1]:
+        if cell.value == "Fecha":
+            fecha_col = cell.column
+            break
+    
+    # Apply date formatting to the "Fecha" column
+    for row in range(2, ws.max_row + 1):
+        ws.cell(row, fecha_col).number_format = "DD/MM/YYYY"
+        
+    wb.save(ARCHIVE_DIAGNOSTIC)
     
     print(f"\nArchivo de resultados guardado en: {ARCHIVE_DIAGNOSTIC}")
     
