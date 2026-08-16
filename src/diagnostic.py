@@ -78,4 +78,38 @@ def standarize_column_dates(serie):
     
     return dates.dt.strftime("%d-%m-%Y")
 
+# IMPLMENTATION
 
+def main():
+    """
+    Main function to execute the diagnostic process
+    """
+    
+    # Load the Excel file
+    df = read_excel_file(ARCHIVE_EXCEL)
+    
+    if df is not None:
+        # Display general information about the DataFrame
+        rows = len(df)
+        columns = len(df.columns)
+
+        print("\nINFORMACIÓN GENERAL\n") 
+
+        print(f"Filas: {rows:,}") 
+        print(f"Columnas: {columns:,}") 
+        print(f"Tamaño: {rows:,} x {columns:,}")
+    
+    # Standardize columns
+    # in the "Nombres" column of the DataFrame
+    df["Nombres"] = standarize_column_names(df["Nombres"])
+    
+    # in the "Fecha" column of the DataFrame
+    df["Fecha"] = standarize_column_dates(df["Fecha"])
+
+    # Save the modified DataFrame to a new Excel file
+    df.to_excel(ARCHIVE_DIAGNOSTIC, index=False)
+    
+    print(f"\nArchivo de resultados guardado en: {ARCHIVE_DIAGNOSTIC}")
+    
+if __name__ == "__main__":
+    main()
