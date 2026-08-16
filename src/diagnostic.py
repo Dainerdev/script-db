@@ -76,10 +76,25 @@ def remove_accents(s):
     # Normalize the string to NFKD form and encode to ASCII, ignoring errors
     return unicodedata.normalize("NFKD", s).encode("ASCII", "ignore").decode("ASCII")
 
+# Function to standarize column dates
+def standarize_column_dates(serie):
+    """
+    Function to standarize column dates
+    """
+    
+    # Convert the series to datetime, coercing errors and assuming day-first format
+    dates = pd.to_datetime(serie, errors="coerce", dayfirst=True)
+    
+    return dates.dt.strftime("%d-%m-%Y")
 
 # IMPLMENTATION
 
 # Standardize column names
-df["Nombres"] = standarize_column_names(df["Nombres"])
+# in the "Nombres" column of the DataFrame
+#df["Nombres"] = standarize_column_names(df["Nombres"])
+
+# Standardize column dates
+# in the "Fecha" column of the DataFrame
+df["Fecha"] = standarize_column_dates(df["Fecha"])
 
 
