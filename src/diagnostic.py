@@ -1,8 +1,11 @@
 import pandas as pd
 
 def check_columns(df):
+    """
+    Check the columns of the DataFrame and return a summary of their characteristics.
+    """
     
-    results = []
+    result = []
     
     for column in df.columns:
         
@@ -12,7 +15,7 @@ def check_columns(df):
         nulls = serie.isnull().sum()
         unique = serie.nunique(dropna=True)
         
-        results.append({
+        result.append({
             "Columna": column,
             "Tipo": str(serie.dtype),
             "Total": total,
@@ -22,5 +25,27 @@ def check_columns(df):
             "Duplicados": total - unique - nulls
         })
     
-    return pd.DataFrame(results)
+    return pd.DataFrame(result)
     
+def check_nulls(df):
+    """
+    Check for null values in the DataFrame and return a summary.
+    """
+    result = []
+    
+    for column in df.columns:        
+        nulls = df[column].isnull().sum()
+        total = len(df)
+        
+        percentage_nulls = (nulls / total) * 100 if total > 0 else 0
+        
+        result.append({
+            "Columna": column,
+            "Total": total,
+            "Nulos": nulls,
+            "Porcentaje Nulos": round(percentage_nulls, 2)
+        })
+    
+    return pd.DataFrame(result)
+
+
