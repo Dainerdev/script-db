@@ -13,6 +13,8 @@ def export_excel(df, file_path):
         wb = load_workbook(file_path)
         ws = wb.active
         
+        fecha_col = None
+        
         # Search for the "Fecha" column
         for cell in ws[1]:
             if cell.value == "Fecha":
@@ -20,8 +22,12 @@ def export_excel(df, file_path):
                 break
         
         # Apply date formatting to the "Fecha" column
-        for row in range(2, ws.max_row + 1):
-            ws.cell(row, fecha_col).number_format = "DD/MM/YYYY"
+        if fecha_col is not None:
+            for row in range(2, ws.max_row + 1):
+                cell = ws.cell(row, fecha_col)
+                
+                if cell.value is not None:
+                    cell.number_format = "DD/MM/YYYY"
             
         wb.save(file_path)
         
