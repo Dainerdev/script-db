@@ -66,3 +66,17 @@ def check_unique_values(df):
         })
     
     return pd.DataFrame(result)
+
+
+def check_duplicates(df):
+    """
+    Check for duplicate rows in the DataFrame and return a summary.
+    """
+    mask = df.duplicated(keep=False)
+    
+    duplicate_rows = df[mask].copy()
+    
+    duplicate_rows.insert(0, "Fila Duplicada", duplicate_rows.index + 2)
+    
+    return duplicate_rows
+
