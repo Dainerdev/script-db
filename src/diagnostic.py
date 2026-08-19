@@ -48,4 +48,21 @@ def check_nulls(df):
     
     return pd.DataFrame(result)
 
-
+def check_unique_values(df):
+    """
+    Check for unique values in the DataFrame and return a summary.
+    """
+    result = []
+    
+    for column in df.columns:
+        unique_values = df[column].nunique(dropna=True)
+        total = len(df)
+        
+        result.append({
+            "Columna": column,
+            "Total": total,
+            "Unicos": unique_values,
+            "Porcentaje Unicos": round((unique_values / total) * 100, 2) if total > 0 else 0
+        })
+    
+    return pd.DataFrame(result)
