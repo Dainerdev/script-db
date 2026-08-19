@@ -111,3 +111,31 @@ def check_text_problems(df):
     
     return pd.DataFrame(result)
 
+def check_lengths(df):
+    """
+    Check the lengths of string values in the DataFrame and return a summary.
+    """
+    result = []
+    
+    for column in df.columns:
+        
+        serie = df[column]
+        
+        if not pd.api.types.is_string_dtype(serie):
+            continue
+        
+        data = serie.dropna().astype(str)
+        
+        min_length = data.str.len().min()
+        max_length = data.str.len().max()
+        avg_length = data.str.len().mean()
+        
+        result.append({
+            "Columna": column,
+            "Total": len(df),
+            "Longitud Mínima": min_length,
+            "Longitud Máxima": max_length,
+            "Longitud Promedio": round(avg_length, 2)
+        })
+    
+    return pd.DataFrame(result)
