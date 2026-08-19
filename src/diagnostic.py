@@ -80,3 +80,34 @@ def check_duplicates(df):
     
     return duplicate_rows
 
+def check_text_problems(df):
+    """
+    Check for text problems in the DataFrame and return a summary.
+    """
+    result = []
+    
+    for column in df.columns:
+        
+        serie = df[column]
+        
+        if not pd.api.types.is_string_dtype(serie):
+            continue
+        
+        data = serie.dropna().astype(str)
+        
+        start_spaces = data.str.match(r"^\s+").sum()
+        
+        end_spaces = data.str.match(r".*\s+$").sum()
+        
+        double_spaces = data.str.contains(r"\s{2,}", regex=True).sum()
+        
+        result.append({
+            "Columna": column,
+            "Total": len(df),
+            "Espacios Iniciales": start_spaces,
+            "Espacios Finales": end_spaces,
+            "Múltiples Espacios": double_spaces
+        })
+    
+    return pd.DataFrame(result)
+
