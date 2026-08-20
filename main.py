@@ -1,5 +1,5 @@
 from src.reading import *
-from standarization import *
+from src.standarization import *
 from src.exportation import *
 from src.diagnostic import *
 
@@ -56,18 +56,18 @@ def main():
     
     # STANDARIZATION IMPLEMENTATION
     
-    #print("\nPROCESANDO ESTANDARIZACIÓN\n")
+    # print("\nPROCESANDO ESTANDARIZACIÓN\n")
 
-    # Standardize columns    
-    # in the "Nombres" column of the DataFrame
-    #df["Nombres"] = standarize_column_names(df["NOMBRES_APELLIDOS_COMPARECIENTE"])
+    # #Standardize columns    
+    # #in the "Nombres" column of the DataFrame
+    # df["Nombres"] = standarize_column_names(df["NOMBRES_APELLIDOS_COMPARECIENTE"])
     
-    # in the "Fecha" column of the DataFrame
-    #df["FECHA"] = standarize_column_dates(df["FECHA"])
+    # #in the "Fecha" column of the DataFrame
+    # df["FECHA"] = standarize_column_dates(df["FECHA"])
     
-    # SAVE EXCEL MODIFIED
-    # Save the modified DataFrame to a new Excel file
-    #export_excel(df, FILE_DIAGNOSTIC)
+    # #SAVE EXCEL MODIFIED
+    # #Save the modified DataFrame to a new Excel file
+    # export_excel(df, FILE_DIAGNOSTIC)
     
 if __name__ == "__main__":
     main()
