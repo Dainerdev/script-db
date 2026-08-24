@@ -1,5 +1,5 @@
 from src.reading import *
-from src.standarization import *
+from src.standardization import *
 from src.exportation import *
 from src.diagnostic import *
 
@@ -68,24 +68,24 @@ def main():
     for col in df.columns:
         serie = df[col]
         if pd.api.types.is_string_dtype(serie) or serie.dtype == "object":
-            df[col] = standarize_column_spacing(df[col])
+            df[col] = standardize_column_spacing(df[col])
 
     # 3.3. Formato de nombres propios (Sobreescribiendo columnas originales)
     print(" -> Aplicando formato a Nombres, Magistrados y Funcionario a cargo...")
     if "NOMBRES_APELLIDOS_COMPARECIENTE" in df.columns:
-        df["NOMBRES_APELLIDOS_COMPARECIENTE"] = standarize_column_names(df["NOMBRES_APELLIDOS_COMPARECIENTE"])
+        df["NOMBRES_APELLIDOS_COMPARECIENTE"] = standardize_column_names(df["NOMBRES_APELLIDOS_COMPARECIENTE"])
     if "MAGISTRADO" in df.columns:
-        df["MAGISTRADO"] = standarize_column_names(df["MAGISTRADO"])
+        df["MAGISTRADO"] = standardize_column_names(df["MAGISTRADO"])
     if "FUNCIONARIO A CARGO" in df.columns:
-        df["FUNCIONARIO A CARGO"] = standarize_column_names(df["FUNCIONARIO A CARGO"])
+        df["FUNCIONARIO A CARGO"] = standardize_column_names(df["FUNCIONARIO A CARGO"])
 
     # 3.4. Formato de Fechas
     print(" -> Estandarizando formato de Fechas y Reparto...")
     if "FECHA" in df.columns:
-        df["FECHA"] = standarize_column_dates(df["FECHA"])
+        df["FECHA"] = standardize_column_dates(df["FECHA"])
     
     if "REPARTO" in df.columns:
-        fecha_reparto, _ = standarize_reparto_column(df["REPARTO"])
+        fecha_reparto, _ = standardize_reparto_column(df["REPARTO"])
         df["REPARTO"] = fecha_reparto  # Guardamos solo la fecha correcta
 
     # ============================================================
