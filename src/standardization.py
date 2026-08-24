@@ -3,18 +3,16 @@ from datetime import date
 import pandas as pd
 
 # FUNCTIONS
-# Function to standarize column names
-def standarize_column_names(serie):
+# Function to standardize column names
+def standardize_column_names(serie):
     """
-    Function to standarize column names (mayusculas + sin tildes + espacios).
+    Function to standardize column names (mayusculas + sin tildes + espacios).
     Verificado: en pandas 3.x .astype(str) preserva los nulos reales (no los
     convierte al string "nan"), asi que esta funcion es segura tal cual
     estaba. Pensada para columnas de NOMBRE PROPIO: comparecientes,
     magistrado, funcionario a cargo.
     """
-    serie = serie.astype(str)
-    serie = serie.str.strip()
-    serie = serie.str.replace(r"\s+", " ", regex=True)
+    serie = standardize_column_spacing(serie)
     serie = serie.str.upper()
     serie = serie.map(remove_accents)
     return serie
@@ -29,10 +27,10 @@ def remove_accents(s):
     s = str(s)
     return unicodedata.normalize("NFKD", s).encode("ASCII", "ignore").decode("ASCII")
 
-# Function to standarize column dates
-def standarize_column_dates(serie):
+# Function to standardize column dates
+def standardize_column_dates(serie):
     """
-    Function to standarize column dates
+    Function to standardize column dates
     """
     serie = serie.astype(str).str.strip()
     dates = pd.to_datetime(serie, errors="coerce", dayfirst=True, format="mixed")
@@ -43,13 +41,13 @@ def standarize_column_dates(serie):
 # NUEVO: pedidos en la reunion (ver informe de diagnostico)
 # ============================================================
 
-def standarize_column_spacing(serie):
+def standardize_column_spacing(serie):
     """
     "Aplicar funcion de espaciado en todas las columnas"
 
     Limpieza SOLO de espacios (recorta inicio/fin, colapsa espacios
     multiples a uno) sin tocar mayusculas ni tildes. A diferencia de
-    standarize_column_names, esta si es segura para aplicar a TODAS las
+    standardize_column_names, esta si es segura para aplicar a TODAS las
     columnas de texto -incluidas las de texto libre como OBSERVACIONES o
     DATOS RESOLUCION- donde forzar mayusculas no tiene sentido.
     """
@@ -72,8 +70,8 @@ def split_multiple_comparecientes(df, name_col="NOMBRES_APELLIDOS_COMPARECIENTE"
     intacta y se marca en la columna nueva '_revisar_multiples' = True para
     revision manual, en vez de adivinar el emparejamiento.
 
-    Nota: pensada para correr ANTES de standarize_column_names /
-    standarize_column_spacing sobre estas dos columnas (splitea sobre el
+    Nota: pensada para correr ANTES de standardize_column_names /
+    standardize_column_spacing sobre estas dos columnas (splitea sobre el
     texto crudo, incluido el \\n).
     """
     df = df.copy()
@@ -108,7 +106,7 @@ def split_multiple_comparecientes(df, name_col="NOMBRES_APELLIDOS_COMPARECIENTE"
     return resultado
 
 
-def standarize_reparto_column(serie, min_year=2017, max_year=None):
+def standardize_reparto_column(serie, min_year=2017, max_year=None):
     """
     "Aplicar funcion de formato de fecha en col reparto"
 
