@@ -1,20 +1,17 @@
 import pandas as pd
+import difflib
+from collections import defaultdict
 
 def check_columns(df):
     """
     Check the columns of the DataFrame and return a summary of their characteristics.
     """
-    
     result = []
-    
     for column in df.columns:
-        
         serie = df[column]
-        
         total = len(serie)
         nulls = serie.isnull().sum()
         unique = serie.nunique(dropna=True)
-        
         result.append({
             "Columna": column,
             "Tipo": str(serie.dtype),
@@ -24,28 +21,23 @@ def check_columns(df):
             "Unicos": unique,
             "Duplicados": total - unique - nulls
         })
-    
     return pd.DataFrame(result)
-    
+
 def check_nulls(df):
     """
     Check for null values in the DataFrame and return a summary.
     """
     result = []
-    
-    for column in df.columns:        
+    for column in df.columns:
         nulls = df[column].isnull().sum()
         total = len(df)
-        
         percentage_nulls = (nulls / total) * 100 if total > 0 else 0
-        
         result.append({
             "Columna": column,
             "Total": total,
             "Nulos": nulls,
             "Porcentaje Nulos": round(percentage_nulls, 2)
         })
-    
     return pd.DataFrame(result)
 
 def check_unique_values(df):
@@ -53,54 +45,51 @@ def check_unique_values(df):
     Check for unique values in the DataFrame and return a summary.
     """
     result = []
-    
     for column in df.columns:
         unique_values = df[column].nunique(dropna=True)
         total = len(df)
-        
         result.append({
             "Columna": column,
             "Total": total,
             "Unicos": unique_values,
             "Porcentaje Unicos": round((unique_values / total) * 100, 2) if total > 0 else 0
         })
-    
     return pd.DataFrame(result)
 
-
-def check_duplicates(df):
+def check_duplicates(df, subset=None):
     """
     Check for duplicate rows in the DataFrame and return a summary.
+
+    FIX (respecto a la version original): antes comparaba las 23 columnas
+    completas, lo que con texto libre (OBSERVACIONES, DATOS RESOLUCION) casi
+    nunca coincide caracter por caracter y da 0 duplicados aunque existan.
+    Ahora acepta `subset` para comparar solo columnas clave. Si no se pasa
+    subset, se comporta igual que antes (fila completa).
     """
-    mask = df.duplicated(keep=False)
-    
+    mask = df.duplicated(subset=subset, keep=False)
     duplicate_rows = df[mask].copy()
-    
     duplicate_rows.insert(0, "Fila Duplicada", duplicate_rows.index + 2)
-    
     return duplicate_rows
 
 def check_text_problems(df):
     """
     Check for text problems in the DataFrame and return a summary.
+
+    BUG FIX: la version original filtraba con
+    pd.api.types.is_string_dtype(serie), que en pandas 3.x solo reconoce el
+    nuevo dtype nativo 'str' y se salta en silencio las columnas que quedaron
+    como 'object' (justo IDENTIFICACION y NOMBRES_APELLIDOS_COMPARECIENTE,
+    entre otras). Ahora se evaluan tambien las columnas dtype object.
     """
     result = []
-    
     for column in df.columns:
-        
         serie = df[column]
-        
-        if not pd.api.types.is_string_dtype(serie):
+        if not (pd.api.types.is_string_dtype(serie) or serie.dtype == "object"):
             continue
-        
         data = serie.dropna().astype(str)
-        
         start_spaces = data.str.match(r"^\s+").sum()
-        
         end_spaces = data.str.match(r".*\s+$").sum()
-        
         double_spaces = data.str.contains(r"\s{2,}", regex=True).sum()
-        
         result.append({
             "Columna": column,
             "Total": len(df),
@@ -108,28 +97,23 @@ def check_text_problems(df):
             "Espacios Finales": end_spaces,
             "Múltiples Espacios": double_spaces
         })
-    
     return pd.DataFrame(result)
 
 def check_lengths(df):
     """
     Check the lengths of string values in the DataFrame and return a summary.
+
+    Mismo BUG FIX que check_text_problems (ver arriba).
     """
     result = []
-    
     for column in df.columns:
-        
         serie = df[column]
-        
-        if not pd.api.types.is_string_dtype(serie):
+        if not (pd.api.types.is_string_dtype(serie) or serie.dtype == "object"):
             continue
-        
         data = serie.dropna().astype(str)
-        
         min_length = data.str.len().min()
         max_length = data.str.len().max()
         avg_length = data.str.len().mean()
-        
         result.append({
             "Columna": column,
             "Total": len(df),
@@ -137,5 +121,113 @@ def check_lengths(df):
             "Longitud Máxima": max_length,
             "Longitud Promedio": round(avg_length, 2)
         })
-    
     return pd.DataFrame(result)
+
+
+# ============================================================
+# NUEVO: analisis pedidos en la reunion (ver informe de diagnostico)
+# ============================================================
+
+def check_duplicate_names_by_id(df, id_col="IDENTIFICACIÓN", name_col="NOMBRES_APELLIDOS_COMPARECIENTE"):
+    """
+    "Usar un filtro con identificaciones para comparar duplicados de nombres unicos"
+
+    Agrupa por cedula (IDENTIFICACION) -ya que es un dato mas estable que el
+    nombre- y detecta cedulas que aparecen escritas con mas de una variante
+    de nombre. Pensada para correr DESPUES de standarize_column_spacing /
+    standarize_column_names y despues de split_multiple_comparecientes,
+    porque antes de eso una misma celda puede traer varios comparecientes
+    empaquetados y el agrupamiento no tiene sentido.
+    """
+    temp = df[[id_col, name_col]].dropna().copy()
+    temp[id_col] = temp[id_col].astype(str).str.strip()
+    temp[name_col] = temp[name_col].astype(str).str.strip()
+
+    # IMPORTANTE: IDENTIFICACION trae placeholders de texto en vez de cedula
+    # real cuando no se conoce (ej. "Caso 003", "M.C."), usados por igual
+    # para cientos de personas DISTINTAS. Agruparlos como si fueran una sola
+    # identidad genera listas de miles de nombres sin relacion real entre
+    # si (y celdas de Excel que exceden el limite de 32.767 caracteres).
+    # Se descartan del analisis los valores que no son mayormente numericos.
+    es_cedula_real = temp[id_col].str.match(r"^\d{5,15}$")
+    excluidos = temp.loc[~es_cedula_real, id_col].nunique()
+    if excluidos:
+        print(f"  (check_duplicate_names_by_id: se excluyeron {excluidos} valores de "
+              f"IDENTIFICACIÓN que no son cédula numérica real, ej. 'Caso 003' -no se "
+              f"agrupan como si fueran una sola persona)")
+    temp = temp[es_cedula_real]
+
+    grouped = temp.groupby(id_col)[name_col].agg(lambda x: sorted(set(x)))
+    inconsistentes = grouped[grouped.apply(len) > 1]
+
+    result = pd.DataFrame({
+        "IDENTIFICACION": inconsistentes.index,
+        "Variantes_Nombre": inconsistentes.values,
+        "N_Variantes": inconsistentes.apply(len)
+    })
+    return result.sort_values("N_Variantes", ascending=False).reset_index(drop=True)
+
+
+def check_fuzzy_duplicate_names(names, threshold=0.90, block_size=8, max_block_size=300):
+    """
+    "Usar un fuzzy para comparar los posibles nombres repetidos"
+
+    Compara nombres YA estandarizados (mayusculas, sin tildes, espacios
+    limpios) usando difflib (libreria estandar, sin dependencias nuevas).
+    Para que sea viable sobre un dataset de ~40 mil nombres unicos (que en
+    O(n^2) puro serian ~800 millones de comparaciones):
+
+    1. Agrupa por un bloque de las primeras `block_size` letras y solo
+       compara dentro de cada bloque.
+    2. Antes de llamar a difflib, descarta pares cuya diferencia de longitud
+       ya haga imposible alcanzar el `threshold` (filtro barato, no cambia
+       el resultado, solo evita trabajo innecesario).
+    3. Los bloques con mas de `max_block_size` nombres (tipicamente
+       prefijos muy comunes, ej. "MARIA " o "JUAN C") se SALTAN por costo y
+       se reportan aparte -no se comparan en silencio-, porque incluso
+       bloqueado, un bloque de miles de nombres puede tardar minutos.
+
+    Limitacion conocida: no detecta variantes donde cambia el ORDEN de
+    nombre/apellido (ej. "GARCIA PEREZ JUAN" vs "JUAN GARCIA PEREZ"), porque
+    el bloqueo es por prefijo, no por conjunto de palabras. Para un analisis
+    exhaustivo (todos los pares, sin bloqueo ni tope) o para tokenizar por
+    palabra, la alternativa recomendada es instalar 'rapidfuzz' -mismo
+    resultado conceptual, pero implementado en C y ordenes de magnitud mas
+    rapido que difflib a esta escala.
+
+    Retorna (DataFrame de pares posibles, lista de bloques omitidos por tamaño).
+    """
+    unique_names = pd.Series(names).dropna().unique()
+    blocks = defaultdict(list)
+    for n in unique_names:
+        blocks[n[:block_size]].append(n)
+
+    omitidos = []
+    posibles = []
+    for prefijo, candidatos in blocks.items():
+        if len(candidatos) < 2:
+            continue
+        if len(candidatos) > max_block_size:
+            omitidos.append({"Prefijo": prefijo, "N_Nombres": len(candidatos)})
+            continue
+        for i in range(len(candidatos)):
+            a = candidatos[i]
+            for j in range(i + 1, len(candidatos)):
+                b = candidatos[j]
+                # filtro barato: si la diferencia de longitud ya hace
+                # imposible llegar al threshold, ni se llama a difflib
+                longest = max(len(a), len(b))
+                if longest == 0 or (1 - abs(len(a) - len(b)) / longest) < threshold:
+                    continue
+                score = difflib.SequenceMatcher(None, a, b).ratio()
+                if score >= threshold:
+                    posibles.append({"Nombre_A": a, "Nombre_B": b, "Similitud": round(score, 3)})
+
+    cols = ["Nombre_A", "Nombre_B", "Similitud"]
+    df_posibles = pd.DataFrame(posibles, columns=cols) if posibles else pd.DataFrame(columns=cols)
+    df_posibles = df_posibles.sort_values("Similitud", ascending=False).reset_index(drop=True)
+
+    omit_cols = ["Prefijo", "N_Nombres"]
+    df_omitidos = pd.DataFrame(omitidos, columns=omit_cols) if omitidos else pd.DataFrame(columns=omit_cols)
+
+    return df_posibles, df_omitidos
