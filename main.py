@@ -72,8 +72,8 @@ def main():
 
     # 3.3. Formato de nombres propios (Sobreescribiendo columnas originales)
     print(" -> Aplicando formato a Nombres, Magistrados y Funcionario a cargo...")
-    if "NOMBRES_APELLIDOS_COMPARECIENTE" in df.columns:
-        df["NOMBRES_APELLIDOS_COMPARECIENTE"] = standardize_column_names(df["NOMBRES_APELLIDOS_COMPARECIENTE"])
+    if "NOMBRES_APELLIDOS" in df.columns:
+        df["NOMBRES_APELLIDOS"] = standardize_column_names(df["NOMBRES_APELLIDOS"])
     if "MAGISTRADO" in df.columns:
         df["MAGISTRADO"] = standardize_column_names(df["MAGISTRADO"])
     if "FUNCIONARIO A CARGO" in df.columns:
@@ -100,13 +100,13 @@ def main():
         print(f"[*] Alerta: Se encontraron {len(ius_duplicados)} radicados IUS duplicados.")
 
     # Nombres por Cedula
-    if "IDENTIFICACIÓN" in df.columns and "NOMBRES_APELLIDOS_COMPARECIENTE" in df.columns:
-        nombres_por_cedula = check_duplicate_names_by_id(df, id_col="IDENTIFICACIÓN", name_col="NOMBRES_APELLIDOS_COMPARECIENTE")
+    if "IDENTIFICACIÓN" in df.columns and "NOMBRES_APELLIDOS" in df.columns:
+        nombres_por_cedula = check_duplicate_names_by_id(df, id_col="IDENTIFICACIÓN", name_col="NOMBRES_APELLIDOS")
         print(f"[*] Alerta: Se encontraron {len(nombres_por_cedula)} cédulas con múltiples variantes de nombre.")
 
     # Fuzzy Matching
-    if "NOMBRES_APELLIDOS_COMPARECIENTE" in df.columns:
-        nombres_fuzzy, _ = check_fuzzy_duplicate_names(df["NOMBRES_APELLIDOS_COMPARECIENTE"])
+    if "NOMBRES_APELLIDOS" in df.columns:
+        nombres_fuzzy, _ = check_fuzzy_duplicate_names(df["NOMBRES_APELLIDOS"])
         print(f"[*] Alerta: Se encontraron {len(nombres_fuzzy)} posibles nombres duplicados por similitud (Fuzzy matching).")
 
     # ============================================================
@@ -114,7 +114,7 @@ def main():
     # ============================================================
     print("\nSEPARANDO DATOS: SIM, ARCHIVADOS Y RETIRADOS...\n")
     
-    clasificacion = df["CLASIFICACION_RADICADO"].astype(str).str.upper()
+    clasificacion = df["CLASIFICACIÓN DEL RADICADO"].astype(str).str.upper()
     
     # 5.1. Extraer los SIM
     mask_sim = clasificacion.str.contains("SIM", na=False)
@@ -122,7 +122,7 @@ def main():
     df_resto = df[~mask_sim].copy()
 
     # 5.2. Identificar Archivados
-    clasificacion_resto = df_resto["CLASIFICACION_RADICADO"].astype(str).str.upper()
+    clasificacion_resto = df_resto["CLASIFICACIÓN DEL RADICADO"].astype(str).str.upper()
     mask_archivado = clasificacion_resto.str.contains("ARCHIVADO", na=False)
     
     # 5.3. Separar archivados normales vs funcionarios retirados
