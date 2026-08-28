@@ -1,14 +1,14 @@
 import pandas as pd
 
 # Read excel file
-def read_excel_file(file_path):
+def read_excel_file(file_path, sheet_name = "Reparto"):
     """
     Function to read an Excel file into a DataFrame
     """
     
     try:
         # Read the Excel file into a DataFrame
-        df = pd.read_excel(file_path, engine="openpyxl")
+        df = pd.read_excel(file_path, sheet_name = sheet_name, engine="openpyxl")
         return df
     
     except FileNotFoundError:
@@ -20,7 +20,7 @@ def read_excel_file(file_path):
         return None
 
 # Get general information about an Excel file
-def excel_general_information(df):
+def excel_general_information(df, sheet_name = "Reparto"):
     """
     Function to get information about an Excel file
     """
@@ -30,7 +30,7 @@ def excel_general_information(df):
         rows = len(df)
         columns = len(df.columns)
 
-        print("\nINFORMACIÓN GENERAL\n") 
+        print("\nINFORMACIÓN GENERAL - HOJA '{sheet_name}'\n") 
 
         print(f"Filas: {rows:,}") 
         print(f"Columnas: {columns:,}") 
