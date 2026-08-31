@@ -57,9 +57,9 @@ def main():
 
     # 3.1. Desdoblar comparecientes múltiples
     print(" -> Desdoblando comparecientes múltiples por fila...")
-    df = split_multiple_comparecientes(df)
+    df = split_multiple_comparecientes(df, name_col="NOMBRES_APELLIDOS")
     
-    # Eliminar columna auxiliar creada por el desdoblamiento para no ensuciar el Excel
+    # Eliminar columna auxiliar creada por el desdoblamiento
     if "_revisar_multiples" in df.columns:
         df = df.drop(columns=["_revisar_multiples"])
 
@@ -70,7 +70,7 @@ def main():
         if pd.api.types.is_string_dtype(serie) or serie.dtype == "object":
             df[col] = standardize_column_spacing(df[col])
 
-    # 3.3. Formato de nombres propios (Sobreescribiendo columnas originales)
+    # 3.3. Formato de nombres propios
     print(" -> Aplicando formato a Nombres, Magistrados y Funcionario a cargo...")
     if "NOMBRES_APELLIDOS" in df.columns:
         df["NOMBRES_APELLIDOS"] = standardize_column_names(df["NOMBRES_APELLIDOS"])
@@ -86,7 +86,7 @@ def main():
     
     if "REPARTO" in df.columns:
         fecha_reparto, _ = standardize_reparto_column(df["REPARTO"])
-        df["REPARTO"] = fecha_reparto  # Guardamos solo la fecha correcta
+        df["REPARTO"] = fecha_reparto
 
     # ============================================================
     # 4. ANÁLISIS AVANZADO (Solo reporte en consola, sin alterar Excel)
@@ -142,13 +142,37 @@ def main():
     print(f" -> Registros Funcionarios Retirados: {len(df_retirados)}")
 
     # ============================================================
-    # 6. EXPORTACIÓN MÚLTIPLE (Manteniendo formato visual original)
+    # 5.5. EXTRAER CASOS: MISMO NOMBRE CON DISTINTO IUS 
+    # ============================================================
+    print("\nEXTRAYENDO CASOS: MISMO NOMBRE CON DISTINTO IUS...\n")
+    
+    if "NOMBRES_APELLIDOS" in df.columns and "RADICADO IUS" in df.columns:
+        # Agrupamos por nombre y contamos cuántos IUS ÚNICOS tiene cada uno
+        ius_por_nombre = df.groupby("NOMBRES_APELLIDOS")["RADICADO IUS"].nunique()
+        
+        # Filtramos para quedarnos solo con los nombres que tienen más de 1 IUS distinto
+        nombres_con_varios_ius = ius_por_nombre[ius_por_nombre > 1].index
+        
+        # Extraemos las filas completas
+        df_multi_ius = df[df["NOMBRES_APELLIDOS"].isin(nombres_con_varios_ius)].copy()
+        
+        # Ordenamos por nombre y luego por IUS
+        if not df_multi_ius.empty:
+            df_multi_ius = df_multi_ius.sort_values(by=["NOMBRES_APELLIDOS", "RADICADO IUS"])
+            
+        print(f" -> Registros de Personas con múltiples IUS: {len(df_multi_ius)}")
+    else:
+        df_multi_ius = pd.DataFrame() # Respaldo por si falla la columna
+
+    # ============================================================
+    # 6. EXPORTACIÓN MÚLTIPLE DE HOJAS A EXCEL (Con estilo de referencia)
     # ============================================================
     hojas_exportar = {
         "Reparto_Activo": df_activos,
         "Archivados": df_archivados,
         "Funcionarios_Retirados": df_retirados,
-        "SIM": df_sim
+        "SIM": df_sim,
+        "Multiples_IUS": df_multi_ius  # <-- Se exporta la nueva hoja aquí
     }
     
     export_multi_sheet_excel(
