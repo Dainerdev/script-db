@@ -1,3 +1,4 @@
+# main.py
 from src.reading import *
 from src.standardization import *
 from src.exportation import *
@@ -24,15 +25,14 @@ def main():
     # ============================================================
     print("\nPROCESANDO ANÁLISIS DETALLADO\n")
     
-    result_col = check_columns(df)
+    result_col, result_nulls, result_uniques, result_text_problems, result_length = run_diagnostics(df)
+
     print("\nANÁLISIS DE COLUMNAS\n")
     print(result_col.to_string(index=False))
-    
-    result_nulls = check_nulls(df)
+
     print("\nANÁLISIS DE VALORES NULOS\n")
     print(result_nulls.to_string(index=False))
-    
-    result_uniques = check_unique_values(df)
+
     print("\nANÁLISIS DE VALORES ÚNICOS\n")
     print(result_uniques.to_string(index=False))
 
@@ -41,12 +41,10 @@ def main():
     print(f"Registro total de filas duplicadas: {len(result_duplicates)}\n")
     if not result_duplicates.empty:
         print(result_duplicates.to_string(index=False))
-    
-    result_text_problems = check_text_problems(df)
+
     print("\nANÁLISIS DE PROBLEMAS EN TEXTO\n")
     print(result_text_problems.to_string(index=False))
-    
-    result_length = check_lengths(df)
+
     print("\nANÁLISIS DE LONGITUD DE TEXTO\n")
     print(result_length.to_string(index=False))
 
@@ -109,32 +107,34 @@ def main():
         nombres_fuzzy, _ = check_fuzzy_duplicate_names(df["NOMBRES_APELLIDOS"])
         print(f"[*] Alerta: Se encontraron {len(nombres_fuzzy)} posibles nombres duplicados por similitud (Fuzzy matching).")
 
-    # ============================================================
-    # 5. FILTRADO Y SEPARACIÓN DE DATOS (Nuevos requerimientos)
-    # ============================================================
-    print("\nSEPARANDO DATOS: SIM, ARCHIVADOS Y RETIRADOS...\n")
+    # ====================================
+    # 5. FILTRADO Y SEPARACIÓN DE DATOS 
+    # ====================================
+    print("\nSEPARANDO DATOS: ARCHIVADOS Y RETIRADOS...\n")
     
+    # Normalizamos las columnas para comparar
     clasificacion = df["CLASIFICACIÓN DEL RADICADO"].astype(str).str.upper()
-    
-    # 5.1. Extraer los SIM
-    mask_sim = clasificacion.str.contains("SIM", na=False)
-    df_sim = df[mask_sim].copy()
-    df_resto = df[~mask_sim].copy()
+    funcionario_cargo = df["FUNCIONARIO A CARGO"].astype(str).str.upper() 
 
     # 5.2. Identificar Archivados
-    clasificacion_resto = df_resto["CLASIFICACIÓN DEL RADICADO"].astype(str).str.upper()
-    mask_archivado = clasificacion_resto.str.contains("ARCHIVADO", na=False)
+    mask_archivado = clasificacion.str.contains("ARCHIVADO", na=False)
     
     # 5.3. Separar archivados normales vs funcionarios retirados
-    funcionario_cargo = df_resto["FUNCIONARIO A CARGO"].astype(str).str.upper()
     mask_retirados = mask_archivado & funcionario_cargo.str.contains("RETIRADOS", na=False)
     mask_archivados_normales = mask_archivado & ~mask_retirados
 
-    df_retirados = df_resto[mask_retirados].copy()
-    df_archivados = df_resto[mask_archivados_normales].copy()
+    df_retirados = df.loc[mask_retirados].copy()
+    df_archivados = df.loc[mask_archivados_normales].copy()
     
     # 5.4. Lo que queda es la base activa limpia
-    df_activos = df_resto[~mask_archivado].copy()
+    df_activos = df.loc[~mask_archivado].copy()    
+    
+    # 5.4. Copia de registros SIM (desde la base activa)
+    print("\nGENERANDO COPIA DE REGISTROS SIM (desde la base activa)...\n")
+    clasificacion_activos = df_activos["CLASIFICACIÓN DEL RADICADO"].astype(str).str.upper()
+    mask_sim = clasificacion_activos.str.contains("SIM", na=False)
+    df_sim = df_activos.loc[mask_sim].copy()   
+    
 
     print(f" -> Registros Base Activa (Reparto): {len(df_activos)}")
     print(f" -> Registros SIM: {len(df_sim)}")
@@ -167,12 +167,14 @@ def main():
     # ============================================================
     # 6. EXPORTACIÓN MÚLTIPLE DE HOJAS A EXCEL (Con estilo de referencia)
     # ============================================================
+    print("\nEXPORTANDO RESULTADOS A EXCEL (varias hojas)...\n")
+    
     hojas_exportar = {
         "Reparto_Activo": df_activos,
         "Archivados": df_archivados,
         "Funcionarios_Retirados": df_retirados,
         "SIM": df_sim,
-        "Multiples_IUS": df_multi_ius  # <-- Se exporta la nueva hoja aquí
+        "Multiples_IUS": df_multi_ius
     }
     
     export_multi_sheet_excel(
