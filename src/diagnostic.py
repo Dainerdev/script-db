@@ -2,59 +2,85 @@ import pandas as pd
 import difflib
 from collections import defaultdict
 
-def check_columns(df):
+def run_diagnostics(df):
     """
-    Check the columns of the DataFrame and return a summary of their characteristics.
+    Reemplaza check_columns + check_nulls + check_unique_values +
+    check_text_problems + check_lengths.
+
+    OPTIMIZACIÓN: las 5 funciones originales recorrían df.columns por
+    separado, recalculando lo mismo varias veces (isnull().sum() en 2
+    funciones, nunique() en 2 funciones, dropna().astype(str) en 2
+    funciones). nunique() en particular es caro en un dataset grande y se
+    pagaba dos veces. Aquí se hace UN solo recorrido de columnas y cada
+    cálculo se reutiliza para las tablas que lo necesiten.
+
+    Retorna las mismas 5 tablas que antes, en el mismo orden:
+    (result_col, result_nulls, result_uniques, result_text_problems, result_length)
     """
-    result = []
+    total = len(df)
+    filas_columns, filas_nulls, filas_unique = [], [], []
+    filas_text, filas_length = [], []
+
     for column in df.columns:
         serie = df[column]
-        total = len(serie)
         nulls = serie.isnull().sum()
         unique = serie.nunique(dropna=True)
-        result.append({
+        pct_nulls = round((nulls / total) * 100, 2) if total > 0 else 0
+
+        filas_columns.append({
             "Columna": column,
             "Tipo": str(serie.dtype),
             "Total": total,
             "Nulos": nulls,
-            "Porcentaje Nulos": round((nulls / total) * 100, 2),
+            "Porcentaje Nulos": pct_nulls,
             "Unicos": unique,
             "Duplicados": total - unique - nulls
         })
-    return pd.DataFrame(result)
 
-def check_nulls(df):
-    """
-    Check for null values in the DataFrame and return a summary.
-    """
-    result = []
-    for column in df.columns:
-        nulls = df[column].isnull().sum()
-        total = len(df)
-        percentage_nulls = (nulls / total) * 100 if total > 0 else 0
-        result.append({
+        filas_nulls.append({
             "Columna": column,
             "Total": total,
             "Nulos": nulls,
-            "Porcentaje Nulos": round(percentage_nulls, 2)
+            "Porcentaje Nulos": pct_nulls
         })
-    return pd.DataFrame(result)
 
-def check_unique_values(df):
-    """
-    Check for unique values in the DataFrame and return a summary.
-    """
-    result = []
-    for column in df.columns:
-        unique_values = df[column].nunique(dropna=True)
-        total = len(df)
-        result.append({
+        filas_unique.append({
             "Columna": column,
             "Total": total,
-            "Unicos": unique_values,
-            "Porcentaje Unicos": round((unique_values / total) * 100, 2) if total > 0 else 0
+            "Unicos": unique,
+            "Porcentaje Unicos": round((unique / total) * 100, 2) if total > 0 else 0
         })
-    return pd.DataFrame(result)
+
+        es_texto = pd.api.types.is_string_dtype(serie) or serie.dtype == "object"
+        if es_texto:
+            # dropna().astype(str) se hace UNA sola vez y se reutiliza
+            # para problemas de texto Y longitudes (antes se hacía 2 veces)
+            data = serie.dropna().astype(str)
+
+            filas_text.append({
+                "Columna": column,
+                "Total": total,
+                "Espacios Iniciales": data.str.match(r"^\s+").sum(),
+                "Espacios Finales": data.str.match(r".*\s+$").sum(),
+                "Múltiples Espacios": data.str.contains(r"\s{2,}", regex=True).sum()
+            })
+
+            filas_length.append({
+                "Columna": column,
+                "Total": total,
+                "Longitud Mínima": data.str.len().min(),
+                "Longitud Máxima": data.str.len().max(),
+                "Longitud Promedio": round(data.str.len().mean(), 2)
+            })
+
+    return (
+        pd.DataFrame(filas_columns),
+        pd.DataFrame(filas_nulls),
+        pd.DataFrame(filas_unique),
+        pd.DataFrame(filas_text),
+        pd.DataFrame(filas_length),
+    )
+
 
 def check_duplicates(df, subset=None):
     """
@@ -71,62 +97,9 @@ def check_duplicates(df, subset=None):
     duplicate_rows.insert(0, "Fila Duplicada", duplicate_rows.index + 2)
     return duplicate_rows
 
-def check_text_problems(df):
-    """
-    Check for text problems in the DataFrame and return a summary.
-
-    BUG FIX: la version original filtraba con
-    pd.api.types.is_string_dtype(serie), que en pandas 3.x solo reconoce el
-    nuevo dtype nativo 'str' y se salta en silencio las columnas que quedaron
-    como 'object' (justo IDENTIFICACION y NOMBRES_APELLIDOS_COMPARECIENTE,
-    entre otras). Ahora se evaluan tambien las columnas dtype object.
-    """
-    result = []
-    for column in df.columns:
-        serie = df[column]
-        if not (pd.api.types.is_string_dtype(serie) or serie.dtype == "object"):
-            continue
-        data = serie.dropna().astype(str)
-        start_spaces = data.str.match(r"^\s+").sum()
-        end_spaces = data.str.match(r".*\s+$").sum()
-        double_spaces = data.str.contains(r"\s{2,}", regex=True).sum()
-        result.append({
-            "Columna": column,
-            "Total": len(df),
-            "Espacios Iniciales": start_spaces,
-            "Espacios Finales": end_spaces,
-            "Múltiples Espacios": double_spaces
-        })
-    return pd.DataFrame(result)
-
-def check_lengths(df):
-    """
-    Check the lengths of string values in the DataFrame and return a summary.
-
-    Mismo BUG FIX que check_text_problems (ver arriba).
-    """
-    result = []
-    for column in df.columns:
-        serie = df[column]
-        if not (pd.api.types.is_string_dtype(serie) or serie.dtype == "object"):
-            continue
-        data = serie.dropna().astype(str)
-        min_length = data.str.len().min()
-        max_length = data.str.len().max()
-        avg_length = data.str.len().mean()
-        result.append({
-            "Columna": column,
-            "Total": len(df),
-            "Longitud Mínima": min_length,
-            "Longitud Máxima": max_length,
-            "Longitud Promedio": round(avg_length, 2)
-        })
-    return pd.DataFrame(result)
-
-
-# ============================================================
-# NUEVO: analisis pedidos en la reunion (ver informe de diagnostico)
-# ============================================================
+# ===================================
+# Análisis pedidos en la reunion
+# ===================================
 
 def check_duplicate_names_by_id(df, id_col="IDENTIFICACIÓN", name_col="NOMBRES_APELLIDOS_COMPARECIENTE"):
     """
