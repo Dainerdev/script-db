@@ -4,11 +4,16 @@ import pandas as pd
 def read_excel_file(file_path, sheet_name = "Reparto"):
     """
     Function to read an Excel file into a DataFrame
+    
+    OPTIMIZACIÓN: engine="calamine" (python-calamine, motor en Rust) en vez
+    de "openpyxl". openpyxl es notoriamente lento leyendo archivos grandes
+    (~185k filas); calamine es órdenes de magnitud más rápido para lectura.
+    Requiere: pip install python-calamine
     """
     
     try:
         # Read the Excel file into a DataFrame
-        df = pd.read_excel(file_path, sheet_name = sheet_name, engine="openpyxl")
+        df = pd.read_excel(file_path, sheet_name = sheet_name, engine="calamine")
         return df
     
     except FileNotFoundError:
