@@ -44,6 +44,14 @@ def main():
     # ============================================================
     grupos = split_by_status(df)
     df_multi_ius = extract_multi_ius(df)
+    
+    # 5.1. Radicado IUS Revisada (solo en Reparto_Activo)
+    print("\nGENERANDO 'Radicado IUS Revisada' en Reparto_Activo...\n")
+    grupos["activos"] = add_radicado_ius_revisada(grupos["activos"])
+    grupos["archivados"] = add_radicado_ius_revisada(grupos["archivados"])
+    grupos["retirados"] = add_radicado_ius_revisada(grupos["retirados"])
+    grupos["sim"] = add_radicado_ius_revisada(grupos["sim"])
+    df_multi_ius = add_radicado_ius_revisada(df_multi_ius)
 
     # ============================================================
     # 6. EXPORTACIÓN 
