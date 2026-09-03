@@ -1,3 +1,4 @@
+#exportartion.py
 import copy as _copy
 import re
 import pandas as pd
@@ -135,7 +136,6 @@ def apply_header_style(ws, columns, style_ref):
         ancho = style_ref["anchos_por_nombre"].get(str(col_name).strip(), style_ref.get("ancho_default"))
         if ancho:
             ws.column_dimensions[letra].width = ancho
-
 
 
 def export_multi_sheet_excel(sheets, file_path, style_reference_path=None, style_reference_sheet=None):
