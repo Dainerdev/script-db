@@ -230,3 +230,62 @@ def check_fuzzy_duplicate_names(names, threshold=0.90, block_size=8, max_block_s
     df_omitidos = pd.DataFrame(omitidos, columns=omit_cols) if omitidos else pd.DataFrame(columns=omit_cols)
 
     return df_posibles, df_omitidos
+
+# ============================================================
+# Separación de datos por estado (Activos/Archivados/Retirados/SIM)
+# y extracción de casos especiales
+# ============================================================
+
+def split_by_status(df):
+    """
+    Separa el DataFrame en Activos / Archivados / Funcionarios Retirados,
+    y genera una COPIA (no extracción) de los registros SIM tomada desde
+    la base activa -los SIM permanecen en Activos, no se mueven.
+
+    Retorna un dict: {"activos", "archivados", "retirados", "sim"}
+    """
+    print("\nSEPARANDO DATOS: ARCHIVADOS Y RETIRADOS...\n")
+
+    clasificacion = df["CLASIFICACIÓN DEL RADICADO"].astype(str).str.upper()
+    funcionario_cargo = df["FUNCIONARIO A CARGO"].astype(str).str.upper()
+
+    mask_archivado = clasificacion.str.contains("ARCHIVADO", na=False)
+    mask_retirados = mask_archivado & funcionario_cargo.str.contains("RETIRADOS", na=False)
+    mask_archivados_normales = mask_archivado & ~mask_retirados
+
+    df_retirados = df.loc[mask_retirados].copy()
+    df_archivados = df.loc[mask_archivados_normales].copy()
+    df_activos = df.loc[~mask_archivado].copy()
+
+    print("\nGENERANDO COPIA DE REGISTROS SIM (desde la base activa)...\n")
+    clasificacion_activos = df_activos["CLASIFICACIÓN DEL RADICADO"].astype(str).str.upper()
+    mask_sim = clasificacion_activos.str.contains("SIM", na=False)
+    df_sim = df_activos.loc[mask_sim].copy()
+
+    print(f" -> Registros Base Activa (Reparto): {len(df_activos)}")
+    print(f" -> Registros SIM: {len(df_sim)}")
+    print(f" -> Registros Archivados Normales: {len(df_archivados)}")
+    print(f" -> Registros Funcionarios Retirados: {len(df_retirados)}")
+
+    return {"activos": df_activos, "archivados": df_archivados, "retirados": df_retirados, "sim": df_sim}
+
+
+def extract_multi_ius(df):
+    """
+    Extrae las filas de personas (por NOMBRES_APELLIDOS) que tienen más de
+    un RADICADO IUS distinto, ordenadas por nombre y luego por IUS.
+    """
+    print("\nEXTRAYENDO CASOS: MISMO NOMBRE CON DISTINTO IUS...\n")
+
+    if not ("NOMBRES_APELLIDOS" in df.columns and "RADICADO IUS" in df.columns):
+        return pd.DataFrame()
+
+    ius_por_nombre = df.groupby("NOMBRES_APELLIDOS")["RADICADO IUS"].nunique()
+    nombres_con_varios_ius = ius_por_nombre[ius_por_nombre > 1].index
+    df_multi_ius = df[df["NOMBRES_APELLIDOS"].isin(nombres_con_varios_ius)].copy()
+
+    if not df_multi_ius.empty:
+        df_multi_ius = df_multi_ius.sort_values(by=["NOMBRES_APELLIDOS", "RADICADO IUS"])
+
+    print(f" -> Registros de Personas con múltiples IUS: {len(df_multi_ius)}")
+    return df_multi_ius
