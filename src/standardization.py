@@ -1,6 +1,8 @@
 import unicodedata
-from datetime import date
 import pandas as pd
+import re
+from datetime import date
+
 
 # =================================================================
 # Funciones de estandarización y limpieza de columnas
@@ -54,8 +56,20 @@ def standardize_column_spacing(serie):
     serie = serie.str.replace(r"\s+", " ", regex=True)
     return serie
 
+def _normalizar_saltos_multiples(serie):
+    """
+    Colapsa saltos de línea múltiples (con o sin espacios/tabs entre ellos)
+    a un solo salto de línea, y quita saltos sueltos al inicio/final de la
+    celda. Sin esto, una celda como "nombre1\n\nnombre2" se parte en 3
+    segmentos ("nombre1", "", "nombre2") en vez de 2 -el segmento vacío
+    genera una fila fantasma (mismo No, mismo RADICADO IUS, nombre e
+    identificación en blanco) al desdoblar.
+    """
+    s = serie.astype(str).str.strip()
+    s = s.str.replace(r"[ \t]*\n[ \t\n]*", "\n", regex=True)
+    return s
 
-def split_multiple_comparecientes(df, name_col="NOMBRES_APELLIDOS_COMPARECIENTE", id_col="IDENTIFICACIÓN"):
+def split_multiple_comparecientes(df, name_col="NOMBRES_APELLIDOS", id_col="IDENTIFICACIÓN"):
     """
     "Aplicar un salto de linea a los nombres y comparar las longitudes para
     separar los grupos de nombres"
@@ -73,8 +87,11 @@ def split_multiple_comparecientes(df, name_col="NOMBRES_APELLIDOS_COMPARECIENTE"
     texto crudo, incluido el \\n).
     """
     df = df.copy()
-    nom_split = df[name_col].astype(str).str.split("\n")
-    id_split = df[id_col].astype(str).str.split("\n")
+    nombres_raw = _normalizar_saltos_multiples(df[name_col])
+    ids_raw = _normalizar_saltos_multiples(df[id_col])
+
+    nom_split = nombres_raw.str.split("\n")
+    id_split = ids_raw.str.split("\n")
 
     n_nom = nom_split.str.len()
     n_id = id_split.str.len()
@@ -89,8 +106,8 @@ def split_multiple_comparecientes(df, name_col="NOMBRES_APELLIDOS_COMPARECIENTE"
     filas_nuevas = []
     for idx in idx_a_desdoblar:
         row = df.loc[idx]
-        nombres = [n.strip() for n in row[name_col].split("\n")]
-        ids = [i.strip() for i in row[id_col].split("\n")]
+        nombres = [n.strip() for n in nombres_raw.loc[idx].split("\n")]
+        ids = [i.strip() for i in ids_raw.loc[idx].split("\n")]
         for nombre, ident in zip(nombres, ids):
             nueva = row.copy()
             nueva[name_col] = nombre
@@ -207,3 +224,4 @@ def clean_and_standardize(df):
         df["REPARTO"] = fecha_reparto
 
     return df
+
