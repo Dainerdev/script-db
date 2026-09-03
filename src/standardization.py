@@ -2,8 +2,10 @@ import unicodedata
 from datetime import date
 import pandas as pd
 
-# FUNCTIONS
-# Function to standardize column names
+# =================================================================
+# Funciones de estandarización y limpieza de columnas
+# =================================================================
+
 def standardize_column_names(serie):
     """
     Function to standardize column names (mayusculas + sin tildes + espacios).
@@ -17,7 +19,7 @@ def standardize_column_names(serie):
     serie = serie.map(remove_accents)
     return serie
 
-# Remove accents from a string
+
 def remove_accents(s):
     """
     Function to remove accents from a string
@@ -27,7 +29,7 @@ def remove_accents(s):
     s = str(s)
     return unicodedata.normalize("NFKD", s).encode("ASCII", "ignore").decode("ASCII")
 
-# Function to standardize column dates
+
 def standardize_column_dates(serie):
     """
     Function to standardize column dates
@@ -36,10 +38,6 @@ def standardize_column_dates(serie):
     dates = pd.to_datetime(serie, errors="coerce", dayfirst=True, format="mixed")
     return dates.dt.date
 
-
-# ============================================================
-# NUEVO: pedidos en la reunion (ver informe de diagnostico)
-# ============================================================
 
 def standardize_column_spacing(serie):
     """
@@ -172,3 +170,40 @@ def standardize_reparto_column(serie, min_year=2017, max_year=None):
     categoria.loc[s.isin(["nan", "NaT", ""])] = "vacio"
 
     return fecha_final.dt.date, categoria
+
+
+def clean_and_standardize(df):
+    """
+    Etapa 3 del pipeline: desdoblado de comparecientes, espaciado en todas
+    las columnas de texto, formato de nombres propios, y estandarización
+    de fechas (FECHA y REPARTO). Retorna el df limpio.
+    """
+    print("\nPROCESANDO ESTANDARIZACIÓN Y LIMPIEZA...\n")
+
+    print(" -> Desdoblando comparecientes múltiples por fila...")
+    df = split_multiple_comparecientes(df, name_col="NOMBRES_APELLIDOS")
+    if "_revisar_multiples" in df.columns:
+        df = df.drop(columns=["_revisar_multiples"])
+
+    print(" -> Estandarizando espaciado en todas las columnas...")
+    for col in df.columns:
+        serie = df[col]
+        if pd.api.types.is_string_dtype(serie) or serie.dtype == "object":
+            df[col] = standardize_column_spacing(df[col])
+
+    # OPTIMIZACIÓN: ya no se llama a standardize_column_names (que vuelve a
+    # espaciar por dentro); el espaciado ya se aplicó arriba a todas las
+    # columnas de texto, incluidas estas 3. Solo falta mayúsculas + tildes.
+    print(" -> Aplicando formato a Nombres, Magistrados y Funcionario a cargo...")
+    for col in ("NOMBRES_APELLIDOS", "MAGISTRADO", "FUNCIONARIO A CARGO"):
+        if col in df.columns:
+            df[col] = df[col].str.upper().map(remove_accents)
+
+    print(" -> Estandarizando formato de Fechas y Reparto...")
+    if "FECHA" in df.columns:
+        df["FECHA"] = standardize_column_dates(df["FECHA"])
+    if "REPARTO" in df.columns:
+        fecha_reparto, _ = standardize_reparto_column(df["REPARTO"])
+        df["REPARTO"] = fecha_reparto
+
+    return df
