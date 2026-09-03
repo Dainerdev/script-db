@@ -2,6 +2,35 @@ import pandas as pd
 import difflib
 from collections import defaultdict
 
+# ======================================================================================================
+# Función principal: Recorre todas las funciones de diagnostico y analisis de duplicados
+# ======================================================================================================
+
+def run_similarity_report(df):
+    """
+    Corre las alertas de duplicados/similitud (IUS, cédulas con variantes
+    de nombre, fuzzy matching) y las imprime. Solo reporte, no modifica df.
+    """
+    print("\nEJECUTANDO ANÁLISIS DE DUPLICADOS Y SIMILITUD (Reporte)\n")
+
+    if "RADICADO IUS" in df.columns and "No" in df.columns:
+        ius_por_registro = df.groupby("RADICADO IUS")["No"].nunique()
+        ius_duplicados = ius_por_registro[ius_por_registro > 1]
+        print(f"[*] Alerta: Se encontraron {len(ius_duplicados)} radicados IUS duplicados.")
+
+    if "IDENTIFICACIÓN" in df.columns and "NOMBRES_APELLIDOS" in df.columns:
+        nombres_por_cedula = check_duplicate_names_by_id(df, id_col="IDENTIFICACIÓN", name_col="NOMBRES_APELLIDOS")
+        print(f"[*] Alerta: Se encontraron {len(nombres_por_cedula)} cédulas con múltiples variantes de nombre.")
+
+    if "NOMBRES_APELLIDOS" in df.columns:
+        nombres_fuzzy, _ = check_fuzzy_duplicate_names(df["NOMBRES_APELLIDOS"])
+        print(f"[*] Alerta: Se encontraron {len(nombres_fuzzy)} posibles nombres duplicados por similitud (Fuzzy matching).")
+
+
+# ===================================================
+# Funciones de diagnostico y analisis de duplicados
+# ===================================================
+
 def run_diagnostics(df):
     """
     Reemplaza check_columns + check_nulls + check_unique_values +
@@ -97,9 +126,6 @@ def check_duplicates(df, subset=None):
     duplicate_rows.insert(0, "Fila Duplicada", duplicate_rows.index + 2)
     return duplicate_rows
 
-# ===================================
-# Análisis pedidos en la reunion
-# ===================================
 
 def check_duplicate_names_by_id(df, id_col="IDENTIFICACIÓN", name_col="NOMBRES_APELLIDOS_COMPARECIENTE"):
     """
