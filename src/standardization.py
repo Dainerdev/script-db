@@ -225,3 +225,48 @@ def clean_and_standardize(df):
 
     return df
 
+def add_radicado_ius_revisada(df, ius_col="RADICADO IUS", new_col="Radicado IUS Revisada"):
+    """
+    "Radicado IUS Revisada: columna con código únicos por compareciente"
+
+    Crea new_col INMEDIATAMENTE A LA DERECHA de ius_col (no reemplaza el
+    original).
+
+    Se asume que el código "más avanzado" es el que realmente le
+    pertenece al compareciente. Para celdas con un solo código, se copia
+    tal cual (ej. "E-2018-610050" -> "E-2018-610050").
+
+    "Más avanzado" se determina extrayendo todos los números del código
+    (ej. "E-2018-615759" -> (2018, 615759)) y comparando esas tuplas
+    elemento por elemento (año primero, luego consecutivo) -evita el
+    problema de comparar como texto plano, donde "20000" podría ganarle
+    a "9999" por ser mas corto en algunos casos.
+    """
+    def normalizar_espaciado(celda_texto):
+        # cierra espacios pegados a un guion: "E-2020 -611813" -> "E-2020-611813"
+        return re.sub(r"\s*-\s*", "-", celda_texto)
+
+    def clave_orden(codigo):
+        numeros = re.findall(r"\d+", codigo)
+        return tuple(int(n) for n in numeros) if numeros else (0,)
+
+    def mas_avanzado(celda):
+        if pd.isna(celda):
+            return celda
+        texto = normalizar_espaciado(str(celda).strip())
+        codigos = texto.split() 
+        if not codigos:
+            return celda
+        if len(codigos) == 1:
+            return codigos[0]
+        return max(codigos, key=clave_orden)
+
+    revisada = df[ius_col].apply(mas_avanzado)
+
+    df = df.copy()
+    if new_col in df.columns:
+        df = df.drop(columns=[new_col])
+
+    pos = df.columns.get_loc(ius_col) + 1
+    df.insert(pos, new_col, revisada)
+    return df
