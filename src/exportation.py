@@ -138,7 +138,12 @@ def apply_header_style(ws, columns, style_ref):
             ws.column_dimensions[letra].width = ancho
 
 
-def export_multi_sheet_excel(sheets, file_path, style_reference_path=None, style_reference_sheet=None):
+class ExportCancelled(Exception):
+    """El usuario canceló la exportación a mitad de camino (should_cancel)."""
+
+
+def export_multi_sheet_excel(sheets, file_path, style_reference_path=None, style_reference_sheet=None,
+                              raise_errors=False, on_sheet_done=None, on_sheet_start=None, should_cancel=None):
     """
     Exporta varios DataFrames a un mismo archivo Excel, un sheet por cada
     entrada de `sheets` (dict: nombre_de_hoja -> DataFrame). Aplica el
@@ -163,6 +168,23 @@ def export_multi_sheet_excel(sheets, file_path, style_reference_path=None, style
     para escribir, y aplica formato POR COLUMNA COMPLETA
     (worksheet.set_column) en vez de celda por celda -una sola llamada por
     columna en vez de una por cada fila.
+
+    raise_errors=False (default) preserva el comportamiento original:
+    imprime el error y retorna None sin guardar nada. Con
+    raise_errors=True, además relanza la excepción original después de
+    imprimirla, para que un caller (la GUI) sepa que el guardado falló en
+    vez de asumir éxito.
+
+    on_sheet_start(sheet_name, indice, total) se llama justo ANTES de
+    empezar a escribir cada hoja (para que el caller pueda animar una
+    barra de progreso mientras espera -la escritura en sí no tiene
+    puntos de avance intermedios). on_sheet_done(sheet_name, indice, total)
+    se llama justo despues de terminar -progreso real, no estimado.
+    should_cancel (funcion sin argumentos que retorna bool) se revisa
+    antes de cada hoja; si retorna True, se aborta lanzando
+    ExportCancelled (subclase de Exception: sigue el mismo camino de
+    raise_errors que cualquier otro error, pero el caller puede
+    distinguirla con un except aparte).
     """
     try:
         style_ref = read_header_style(style_reference_path, style_reference_sheet) if style_reference_path else None
@@ -179,8 +201,15 @@ def export_multi_sheet_excel(sheets, file_path, style_reference_path=None, style
             date_format="dd/mm/yyyy", datetime_format="dd/mm/yyyy",
         ) as writer:
             workbook = writer.book
+            total_hojas = len(sheets)
 
-            for sheet_name, data in sheets.items():
+            for indice, (sheet_name, data) in enumerate(sheets.items(), start=1):
+                if should_cancel and should_cancel():
+                    raise ExportCancelled(f"Cancelado antes de escribir la hoja '{sheet_name}'")
+
+                if on_sheet_start:
+                    on_sheet_start(sheet_name, indice, total_hojas)
+
                 safe_name = str(sheet_name)[:31]  # limite de Excel para nombres de hoja
 
                 if estilo_tabla:
@@ -211,7 +240,12 @@ def export_multi_sheet_excel(sheets, file_path, style_reference_path=None, style
                     if ancho:
                         ws.set_column(i, i, ancho)
 
+                if on_sheet_done:
+                    on_sheet_done(sheet_name, indice, total_hojas)
+
         print(f"\nArchivo con {len(sheets)} hoja(s) guardado en: {file_path}")
 
     except Exception as e:
         print(f"Error exporting multi-sheet Excel file: {e}")
+        if raise_errors:
+            raise

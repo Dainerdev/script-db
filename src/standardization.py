@@ -85,8 +85,15 @@ def split_multiple_comparecientes(df, name_col="NOMBRES_APELLIDOS", id_col="IDEN
     Nota: pensada para correr ANTES de standardize_column_names /
     standardize_column_spacing sobre estas dos columnas (splitea sobre el
     texto crudo, incluido el \\n).
+
+    Si falta name_col o id_col, retorna df sin modificar (mismo patrón de
+    guarda que extract_multi_ius en diagnostic.py) — permite que la GUI
+    siga adelante con el resto del pipeline sin esas dos columnas.
     """
     df = df.copy()
+    if name_col not in df.columns or id_col not in df.columns:
+        return df
+
     nombres_raw = _normalizar_saltos_multiples(df[name_col])
     ids_raw = _normalizar_saltos_multiples(df[id_col])
 
@@ -241,7 +248,12 @@ def add_radicado_ius_revisada(df, ius_col="RADICADO IUS", new_col="Radicado IUS 
     elemento por elemento (año primero, luego consecutivo) -evita el
     problema de comparar como texto plano, donde "20000" podría ganarle
     a "9999" por ser mas corto en algunos casos.
+
+    Si falta ius_col, retorna df sin modificar (no agrega new_col).
     """
+    if ius_col not in df.columns:
+        return df.copy()
+
     def normalizar_espaciado(celda_texto):
         # cierra espacios pegados a un guion: "E-2020 -611813" -> "E-2020-611813"
         return re.sub(r"\s*-\s*", "-", celda_texto)
