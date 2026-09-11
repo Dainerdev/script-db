@@ -17,6 +17,12 @@ diagnostico_base.xlsx
 .vscode/
 .idea/
 
+# Empaquetado PyInstaller (specs/001-gui-limpieza-excel: T10)
+build/
+dist/
+*.spec
+logs/
+
 # Variables de entorno
 .env
 .env-1
