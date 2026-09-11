@@ -9,22 +9,37 @@ from collections import defaultdict
 def run_similarity_report(df):
     """
     Corre las alertas de duplicados/similitud (IUS, cédulas con variantes
-    de nombre, fuzzy matching) y las imprime. Solo reporte, no modifica df.
+    de nombre, fuzzy matching), las imprime y retorna sus conteos (dict
+    con "ius_duplicados", "cedulas_variantes", "nombres_fuzzy"). Solo
+    reporte, no modifica df. Si a alguna alerta le falta la columna que
+    necesita, esa alerta se omite y su conteo queda en 0.
     """
     print("\nEJECUTANDO ANÁLISIS DE DUPLICADOS Y SIMILITUD (Reporte)\n")
 
+    ius_duplicados_count = 0
     if "RADICADO IUS" in df.columns and "No" in df.columns:
         ius_por_registro = df.groupby("RADICADO IUS")["No"].nunique()
         ius_duplicados = ius_por_registro[ius_por_registro > 1]
-        print(f"[*] Alerta: Se encontraron {len(ius_duplicados)} radicados IUS duplicados.")
+        ius_duplicados_count = len(ius_duplicados)
+        print(f"[*] Alerta: Se encontraron {ius_duplicados_count} radicados IUS duplicados.")
 
+    cedulas_variantes_count = 0
     if "IDENTIFICACIÓN" in df.columns and "NOMBRES_APELLIDOS" in df.columns:
         nombres_por_cedula = check_duplicate_names_by_id(df, id_col="IDENTIFICACIÓN", name_col="NOMBRES_APELLIDOS")
-        print(f"[*] Alerta: Se encontraron {len(nombres_por_cedula)} cédulas con múltiples variantes de nombre.")
+        cedulas_variantes_count = len(nombres_por_cedula)
+        print(f"[*] Alerta: Se encontraron {cedulas_variantes_count} cédulas con múltiples variantes de nombre.")
 
+    nombres_fuzzy_count = 0
     if "NOMBRES_APELLIDOS" in df.columns:
         nombres_fuzzy, _ = check_fuzzy_duplicate_names(df["NOMBRES_APELLIDOS"])
-        print(f"[*] Alerta: Se encontraron {len(nombres_fuzzy)} posibles nombres duplicados por similitud (Fuzzy matching).")
+        nombres_fuzzy_count = len(nombres_fuzzy)
+        print(f"[*] Alerta: Se encontraron {nombres_fuzzy_count} posibles nombres duplicados por similitud (Fuzzy matching).")
+
+    return {
+        "ius_duplicados": ius_duplicados_count,
+        "cedulas_variantes": cedulas_variantes_count,
+        "nombres_fuzzy": nombres_fuzzy_count,
+    }
 
 
 # ===================================================
@@ -242,15 +257,30 @@ def split_by_status(df):
     y genera una COPIA (no extracción) de los registros SIM tomada desde
     la base activa -los SIM permanecen en Activos, no se mueven.
 
+    Si falta "CLASIFICACIÓN DEL RADICADO" no hay forma de clasificar nada:
+    todo queda en "activos" y los demás grupos vacíos. Si falta
+    "FUNCIONARIO A CARGO" (con clasificación presente), no se puede
+    distinguir retirados: se tratan como archivados normales.
+
     Retorna un dict: {"activos", "archivados", "retirados", "sim"}
     """
     print("\nSEPARANDO DATOS: ARCHIVADOS Y RETIRADOS...\n")
 
-    clasificacion = df["CLASIFICACIÓN DEL RADICADO"].astype(str).str.upper()
-    funcionario_cargo = df["FUNCIONARIO A CARGO"].astype(str).str.upper()
+    if "CLASIFICACIÓN DEL RADICADO" not in df.columns:
+        print(" -> Falta la columna CLASIFICACIÓN DEL RADICADO: no se puede separar, todo queda en Activos.")
+        vacio = df.iloc[0:0].copy()
+        return {"activos": df.copy(), "archivados": vacio, "retirados": vacio.copy(), "sim": vacio.copy()}
 
+    clasificacion = df["CLASIFICACIÓN DEL RADICADO"].astype(str).str.upper()
     mask_archivado = clasificacion.str.contains("ARCHIVADO", na=False)
-    mask_retirados = mask_archivado & funcionario_cargo.str.contains("RETIRADOS", na=False)
+
+    if "FUNCIONARIO A CARGO" in df.columns:
+        funcionario_cargo = df["FUNCIONARIO A CARGO"].astype(str).str.upper()
+        mask_retirados = mask_archivado & funcionario_cargo.str.contains("RETIRADOS", na=False)
+    else:
+        print(" -> Falta la columna FUNCIONARIO A CARGO: no se puede distinguir Retirados.")
+        mask_retirados = pd.Series(False, index=df.index)
+
     mask_archivados_normales = mask_archivado & ~mask_retirados
 
     df_retirados = df.loc[mask_retirados].copy()
