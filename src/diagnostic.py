@@ -243,19 +243,21 @@ def split_by_status(df):
     la base activa -los SIM permanecen en Activos, no se mueven.
 
     Retorna un dict: {"activos", "archivados", "retirados", "sim"}
+    FIX: Ahora "RETIRADOS" se calcula sobre TODO el df, sin depender de df_archivado.
+    Para 'mask_archivado' se usa un OR entre "ARCHIVADO" en CLASIFICACION y "ARCHIVADO" 
+    en FUNCIONARIO A CARGO, para cubrir ambos casos.
     """
     print("\nSEPARANDO DATOS: ARCHIVADOS Y RETIRADOS...\n")
 
     clasificacion = df["CLASIFICACIÓN DEL RADICADO"].astype(str).str.upper()
     funcionario_cargo = df["FUNCIONARIO A CARGO"].astype(str).str.upper()
 
-    mask_archivado = clasificacion.str.contains("ARCHIVADO", na=False)
-    mask_retirados = mask_archivado & funcionario_cargo.str.contains("RETIRADOS", na=False)
-    mask_archivados_normales = mask_archivado & ~mask_retirados
+    mask_retirados = funcionario_cargo.str.contains("RETIRADOS", na=False)
+    mask_archivado = ((clasificacion.str.contains("ARCHIVADO", na=False) | funcionario_cargo.str.contains("ARCHIVADO", na=False)) & ~mask_retirados)
 
     df_retirados = df.loc[mask_retirados].copy()
-    df_archivados = df.loc[mask_archivados_normales].copy()
-    df_activos = df.loc[~mask_archivado].copy()
+    df_archivados = df.loc[mask_archivado].copy()
+    df_activos = df.loc[~mask_archivado & ~mask_retirados].copy()
 
     print("\nGENERANDO COPIA DE REGISTROS SIM (desde la base activa)...\n")
     clasificacion_activos = df_activos["CLASIFICACIÓN DEL RADICADO"].astype(str).str.upper()
