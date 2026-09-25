@@ -26,3 +26,11 @@ logs/
 # Variables de entorno
 .env
 .env-1
+
+# Andamiaje de SDD y de trabajo con la IA: queda local (AGENTS.md, 2026-09-25)
+/docs/
+/specs/
+/grafo-conocimiento/
+/AGENTS.md
+/CLAUDE.md
+/.claude/
