@@ -35,7 +35,7 @@ def excel_general_information(df, sheet_name = "Reparto"):
         rows = len(df)
         columns = len(df.columns)
 
-        print("\nINFORMACIÓN GENERAL - HOJA '{sheet_name}'\n") 
+        print(f"\nINFORMACIÓN GENERAL - HOJA '{sheet_name}'\n") 
 
         print(f"Filas: {rows:,}") 
         print(f"Columnas: {columns:,}") 
