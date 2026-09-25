@@ -257,10 +257,15 @@ def split_by_status(df):
     y genera una COPIA (no extracción) de los registros SIM tomada desde
     la base activa -los SIM permanecen en Activos, no se mueven.
 
+    "RETIRADOS" se calcula sobre TODO el df (FUNCIONARIO A CARGO contiene
+    "RETIRADOS"), sin depender de que la fila esté archivada. Una fila es
+    archivada si "ARCHIVADO" aparece en CLASIFICACIÓN DEL RADICADO o en
+    FUNCIONARIO A CARGO, y no es de retirados.
+
     Si falta "CLASIFICACIÓN DEL RADICADO" no hay forma de clasificar nada:
     todo queda en "activos" y los demás grupos vacíos. Si falta
     "FUNCIONARIO A CARGO" (con clasificación presente), no se puede
-    distinguir retirados: se tratan como archivados normales.
+    distinguir retirados: el archivado se decide solo por la clasificación.
 
     Retorna un dict: {"activos", "archivados", "retirados", "sim"}
     """
@@ -272,20 +277,22 @@ def split_by_status(df):
         return {"activos": df.copy(), "archivados": vacio, "retirados": vacio.copy(), "sim": vacio.copy()}
 
     clasificacion = df["CLASIFICACIÓN DEL RADICADO"].astype(str).str.upper()
-    mask_archivado = clasificacion.str.contains("ARCHIVADO", na=False)
+    archivado_en_clasificacion = clasificacion.str.contains("ARCHIVADO", na=False)
 
     if "FUNCIONARIO A CARGO" in df.columns:
         funcionario_cargo = df["FUNCIONARIO A CARGO"].astype(str).str.upper()
-        mask_retirados = mask_archivado & funcionario_cargo.str.contains("RETIRADOS", na=False)
+        mask_retirados = funcionario_cargo.str.contains("RETIRADOS", na=False)
+        archivado_en_funcionario = funcionario_cargo.str.contains("ARCHIVADO", na=False)
     else:
         print(" -> Falta la columna FUNCIONARIO A CARGO: no se puede distinguir Retirados.")
         mask_retirados = pd.Series(False, index=df.index)
+        archivado_en_funcionario = pd.Series(False, index=df.index)
 
-    mask_archivados_normales = mask_archivado & ~mask_retirados
+    mask_archivado = (archivado_en_clasificacion | archivado_en_funcionario) & ~mask_retirados
 
     df_retirados = df.loc[mask_retirados].copy()
-    df_archivados = df.loc[mask_archivados_normales].copy()
-    df_activos = df.loc[~mask_archivado].copy()
+    df_archivados = df.loc[mask_archivado].copy()
+    df_activos = df.loc[~mask_archivado & ~mask_retirados].copy()
 
     print("\nGENERANDO COPIA DE REGISTROS SIM (desde la base activa)...\n")
     clasificacion_activos = df_activos["CLASIFICACIÓN DEL RADICADO"].astype(str).str.upper()
