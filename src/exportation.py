@@ -6,17 +6,6 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 
-def _nombre_estilo_tabla_xlsxwriter(nombre_openpyxl):
-    """
-    openpyxl guarda el estilo de tabla como "TableStyleMedium2";
-    xlsxwriter espera "Table Style Medium 2" (con espacios). Inserta un
-    espacio antes de cada mayúscula (que no sea la primera letra) y antes
-    de cada dígito.
-    """
-    if not nombre_openpyxl:
-        return None
-    return re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Za-z])(?=[0-9])", " ", nombre_openpyxl)
-
 def export_excel(df, file_path):
     """
     Function to export a DataFrame to an Excel file
@@ -32,11 +21,6 @@ def export_excel(df, file_path):
         fecha_col = None
         
         # Search for the "Fecha" column
-        # BUGFIX: la comparacion era case-sensitive ("Fecha" exacto) y la
-        # columna real se llama "FECHA" (mayusculas) tanto en el archivo
-        # original como despues de standarize_column_dates, asi que el
-        # formato DD/MM/YYYY nunca se aplicaba (se veia en Excel como
-        # 2019-03-29 en vez de 29/03/2019).
         for cell in ws[1]:
             if str(cell.value).strip().upper() == "FECHA":
                 fecha_col = cell.column
@@ -138,80 +122,63 @@ def apply_header_style(ws, columns, style_ref):
             ws.column_dimensions[letra].width = ancho
 
 
-def export_multi_sheet_excel(sheets, file_path, style_reference_path=None, style_reference_sheet=None):
+def export_multi_sheet_excel(sheets, file_path, table_style="TableStyleMedium2", ancho_min=10, ancho_max=50):
     """
     Exporta varios DataFrames a un mismo archivo Excel, un sheet por cada
     entrada de `sheets` (dict: nombre_de_hoja -> DataFrame). Aplica el
     formato DD/MM/YYYY a cualquier columna "FECHA" que encuentre, en
-    cualquier hoja. Si se pasa `style_reference_path`, además replica en
-    cada hoja el estilo de encabezado (fuente, alineación, alto de fila,
-    anchos de columna) de ese archivo -ver read_header_style().
-
-    NOTA DE RENDIMIENTO (dos vueltas):
-    1. La primera version releia el archivo completo con load_workbook()
-       despues de escribirlo y recorria celda por celda con
-       ws.cell(row, col) -no alcanzaba a terminar en una hoja de ~185 mil
-       filas, asi que el formato quedaba sin aplicar aunque los datos si se
-       guardaban.
-    2. La segunda version ya no releia el archivo, pero seguia usando el
-       engine 'openpyxl' para ESCRIBIR, que en la prueba tardó 79.6s solo
-       para la hoja de 184.692 x 27 -sigue sin alcanzar a terminar dentro
-       de un tiempo razonable sumando las otras 7 hojas. 'openpyxl'
-       construye un objeto por cada celda; para escrituras grandes es
-       conocido por ser mucho más lento que la alternativa.
-    Esta version usa el engine 'xlsxwriter' (ya está en requirements.txt)
-    para escribir, y aplica formato POR COLUMNA COMPLETA
-    (worksheet.set_column) en vez de celda por celda -una sola llamada por
-    columna en vez de una por cada fila.
+    cualquier hoja.
+ 
+    ESTILO: cada hoja se convierte en una Tabla de Excel con nombre
+    (encabezado azul, texto blanco en negrilla, filtro automático y
+    filas con banda -igual a la imagen de referencia) usando un estilo
+    ya integrado en Excel, en vez de leerlo de un archivo externo. Los
+    estilos disponibles siguen el patrón "Table Style Light/Medium/Dark N"
+    (N de 1 a 28 aprox.); "Table Style Medium 2" es el azul clásico.
+    Cambia `table_style` si quieres otro color (ej. "Table Style Medium 7"
+    para verde, "Table Style Medium 4" para gris).
+ 
+    `ancho_columna`: ancho fijo (en caracteres) para todas las columnas.
+    Pon None si no quieres que la función toque los anchos.
+ 
+    NOTA DE RENDIMIENTO: usa el engine 'xlsxwriter' para escribir (mucho
+    más rápido que 'openpyxl' en hojas grandes) y aplica formato POR
+    COLUMNA COMPLETA (worksheet.set_column), no celda por celda.
     """
     try:
-        style_ref = read_header_style(style_reference_path, style_reference_sheet) if style_reference_path else None
-        estilo_tabla = _nombre_estilo_tabla_xlsxwriter(style_ref["table_style"]) if style_ref else None
-
-        # date_format/datetime_format van en el CONSTRUCTOR de ExcelWriter:
-        # to_excel() ya escribe las celdas de fecha con su propio formato
-        # (por defecto "YYYY-MM-DD") en el momento en que las escribe; un
-        # set_column() posterior no alcanza a sobreescribir celdas que ya
-        # tienen formato propio. Puesto aquí, aplica a CUALQUIER columna de
-        # tipo fecha en CUALQUIER hoja (FECHA, Reparto_Fecha, etc.).
         with pd.ExcelWriter(
             file_path, engine="xlsxwriter",
             date_format="dd/mm/yyyy", datetime_format="dd/mm/yyyy",
         ) as writer:
-            workbook = writer.book
-
             for sheet_name, data in sheets.items():
                 safe_name = str(sheet_name)[:31]  # limite de Excel para nombres de hoja
-
-                if estilo_tabla:
-                    # el encabezado azul + filas con banda celeste del
-                    # original NO es relleno manual de celda, es el estilo
-                    # con nombre de una Tabla de Excel (ver
-                    # read_header_style). Se escribe la data SIN encabezado
-                    # propio (header=False, startrow=1) y se deja que
-                    # add_table() cree el encabezado -asi hereda el color y
-                    # el filtro automático igual que el original.
-                    data.to_excel(writer, sheet_name=safe_name, index=False, header=False, startrow=1)
-                    ws = writer.sheets[safe_name]
-                    ws.add_table(0, 0, len(data), len(data.columns) - 1, {
-                        "style": estilo_tabla,
-                        "banded_rows": style_ref.get("banded_rows", True),
-                        "columns": [{"header": str(c)} for c in data.columns],
-                    })
-                else:
-                    data.to_excel(writer, sheet_name=safe_name, index=False)
-                    ws = writer.sheets[safe_name]
-
-                if style_ref and style_ref.get("row_height"):
-                    ws.set_row(0, style_ref["row_height"])
-
-                for i, col_name in enumerate(data.columns):
-                    col_str = str(col_name).strip()
-                    ancho = style_ref["anchos_por_nombre"].get(col_str, style_ref.get("ancho_default")) if style_ref else None
-                    if ancho:
-                        ws.set_column(i, i, ancho)
-
+ 
+                # Se escribe la data SIN encabezado propio (header=False,
+                # startrow=1) y se deja que add_table() cree el
+                # encabezado -así hereda el color y el filtro automático
+                # del estilo elegido.
+                data.to_excel(writer, sheet_name=safe_name, index=False, header=False, startrow=1)
+                ws = writer.sheets[safe_name]
+ 
+                ws.add_table(0, 0, len(data), len(data.columns) - 1, {
+                    "style": table_style,
+                    "banded_rows": True,
+                    "columns": [{"header": str(c)} for c in data.columns],
+                })
+                
+                ws.autofit()
+ 
+                if ancho_min is not None or ancho_max is not None:
+                    for i, col_name in enumerate(data.columns):
+                        serie = data[col_name].astype(str)
+                        largo = max(serie.str.len().max() if len(serie) else 0, len(str(col_name))) + 2
+                        if ancho_min is not None:
+                            largo = max(largo, ancho_min)
+                        if ancho_max is not None:
+                            largo = min(largo, ancho_max)
+                        ws.set_column(i, i, largo)
+ 
         print(f"\nArchivo con {len(sheets)} hoja(s) guardado en: {file_path}")
-
+ 
     except Exception as e:
         print(f"Error exporting multi-sheet Excel file: {e}")
