@@ -4,6 +4,24 @@ import unicodedata
 import difflib
 from collections import defaultdict
 from rapidfuzz import process, fuzz
+ 
+# ============================================================
+# UTILIDAD: ENCONTRAR COLUMNA POR PREFIJO
+# ============================================================
+ 
+def encontrar_columna(df, prefijo):
+    """
+    Busca en df.columns la primera columna cuyo nombre empiece con
+    `prefijo` (sin importar mayúsculas/espacios extra, ej. un sufijo
+    entre paréntesis como "TIPO DE EXPEDIENTE (ELECTRONICO - HIBRIDO)").
+    Retorna el nombre REAL de la columna o None si no encuentra ninguna.
+    """
+    prefijo_norm = prefijo.strip().upper()
+    for col in df.columns:
+        if str(col).strip().upper().startswith(prefijo_norm):
+            return col
+    return None
+
 
 # ============================================================
 # DIAGNÓSTICO GENERAL
@@ -135,7 +153,7 @@ def detectar_anomalia(valor, columna):
 
 
 # ============================================================
-# NORMALIZACIÓN PARA SCORING (no afecta el valor propuesto)
+# NORMALIZACIÓN PARA SCORING
 # ============================================================
  
 def _normalizar_para_score(valor):
@@ -161,12 +179,41 @@ def _score(a, b):
     a2, b2 = _normalizar_para_score(a), _normalizar_para_score(b)
     return max(fuzz.token_sort_ratio(a2, b2), fuzz.token_set_ratio(a2, b2))
  
+def aplicar_correcciones_automaticas(df, columna, tabla_similitudes, incluir_revisar=False):
+    """
+    Reescribe `columna` en el DataFrame reemplazando cada valor por su
+    VALOR PROPUESTO, según `tabla_similitudes` (la tabla que devuelve
+    crear_tabla_similitudes o comparar_con_parametros para esa columna).
+ 
+    Por defecto SOLO aplica los 'AUTOMÁTICO' -los 'PARA REVISAR' y
+    'POR DETERMINAR' se dejan intactos hasta que alguien los confirme
+    (pásale incluir_revisar=True si ya los revisaron y quieres aplicar
+    esos también).
+ 
+    Úsala ANTES de generar_listado_parametros si quieres que el
+    DataFrame real (y todo lo que exportes después: Reparto_Activo, etc.)
+    quede con la forma unificada en vez de solo tener el reporte de
+    similitud aparte. Retorna el DataFrame con la columna ya corregida
+    (no modifica `df` en el sitio).
+    """
+    estados_validos = {"AUTOMÁTICO"} | ({"PARA REVISAR"} if incluir_revisar else set())
+    mapa = {
+        fila["VALOR ORIGINAL"]: fila["VALOR PROPUESTO"]
+        for _, fila in tabla_similitudes.iterrows()
+        if fila["ESTADO"] in estados_validos and pd.notna(fila["VALOR PROPUESTO"])
+    }
+ 
+    df = df.copy()
+    serie_limpia = df[columna].astype(str).str.strip()
+    df[columna] = serie_limpia.map(lambda v: mapa.get(v, v))
+    return df
+
  
 # ============================================================
 # IDENTIFICACIÓN DE PARÁMETROS
 # ============================================================
 
-def comparar_con_parametros(df, columna, parametros, threshold=90):
+def comparar_con_parametros(df, columna, parametros, threshold=80):
     """
     Compara valores contra un catálogo conocido.
     >= threshold -> AUTOMÁTICO
@@ -184,10 +231,10 @@ def comparar_con_parametros(df, columna, parametros, threshold=90):
             scorer=fuzz.ratio,
         )
 
-        if resultado is None:
-            continue
-
         propuesta, score, _ = resultado
+        
+        if resultado is None or score <= 60:
+            propuesta = "POR DETERMINAR"
 
         resultados.append({
             "COLUMNA": columna,
@@ -204,6 +251,18 @@ def comparar_con_parametros(df, columna, parametros, threshold=90):
 # ============================================================
 # DESCUBRIMIENTO DE VARIANTES (sin catálogo cerrado)
 # ============================================================
+
+def _numeros_distintos(a, b):
+    """
+    True si AMBAS cadenas contienen números y esos números son distintos.
+    Cuando esto da True, nunca se deben fusionar, sin importar qué tan 
+    alto sea el score.
+    """
+    numeros_a = set(re.findall(r"\d+", a))
+    numeros_b = set(re.findall(r"\d+", b))
+    return bool(numeros_a) and bool(numeros_b) and numeros_a != numeros_b
+
+
 def _agrupar_por_representante(valores, frecuencias, umbral):
     """
     Agrupa valores por similitud SIN transitividad (a diferencia de
@@ -232,6 +291,8 @@ def _agrupar_por_representante(valores, frecuencias, umbral):
     for valor in ordenados:
         mejor_rep, mejor_score = None, -1
         for rep in representantes:
+            if _numeros_distintos(valor, rep):
+                continue
             score = _score(valor, rep)
             if score >= umbral and score > mejor_score:
                 mejor_rep, mejor_score = rep, score
@@ -244,7 +305,7 @@ def _agrupar_por_representante(valores, frecuencias, umbral):
     return miembros
 
 
-def crear_tabla_similitudes(df, columna, threshold=90, limit=5, block_size=None, max_block_size=500, forzar_revision=False):
+def crear_tabla_similitudes(df, columna, threshold=80, limit=5, block_size=None, max_block_size=500, forzar_revision=False):
     """
     Descubre variantes similares dentro de una misma columna y las agrupa
     en UN solo parámetro por grupo. No modifica los datos.
@@ -578,6 +639,133 @@ def split_by_status(df):
         "retirados": df_retirados,
         "sim": df_sim,
     }
+    
+
+def generar_listado_parametros(df, columna, valores_fijos=None, threshold=90,
+                                umbral_por_determinar=60, forzar_revision=False,
+                                block_size=None, max_block_size=500):
+    """
+    Listado final de parámetros por columna, listo para presentarle a la
+    Secretaría: UN parámetro por fila, con cuántos registros lo usan y
+    qué variantes se le unificaron. Reusa comparar_con_parametros (si hay
+    catálogo cerrado, ej. TIPO DE EXPEDIENTE) o crear_tabla_similitudes
+    (si no) y los reagrupa según las 3 reglas que pidieron:
+ 
+    1. Variantes evidentes (typo/tilde/mayúscula/palabra faltante) que la
+       función ya agrupó con ESTADO='AUTOMÁTICO' -> se funden en UN solo
+       parámetro (el VALOR PROPUESTO, la versión más completa/bien
+       escrita), sumando la frecuencia de todas sus variantes.
+    2. Valores que claramente no corresponden al tipo de la columna (ej.
+       un número o fecha en NOMBRES_APELLIDOS -detectado por
+       detectar_anomalia-, o en columnas con catálogo cerrado como TIPO
+       DE EXPEDIENTE, un valor cuyo score contra las 4 opciones válidas
+       es tan bajo -por debajo de `umbral_por_determinar`- que
+       claramente no es ninguna de ellas) -> NO se incluyen como
+       parámetro propio, se marcan como "POR DETERMINAR".
+    3. Lo dudoso (ESTADO='PARA REVISAR' pero sin ser una anomalía de
+       tipo, o con score decente contra el catálogo) se deja en la
+       lista, cada uno como su PROPIO parámetro individual (no se funde
+       con nada solo), para que la Secretaría decida.
+ 
+    Retorna: COLUMNA, PARAMETRO, FRECUENCIA, N_VARIANTES,
+    VARIANTES_UNIFICADAS, ESTADO ('AUTOMÁTICO' / 'DUDOSO' / 'POR DETERMINAR')
+    """
+    if valores_fijos is not None:
+        tabla = comparar_con_parametros(df, columna, valores_fijos, threshold=threshold)
+        col_frec = "FRECUENCIA"
+    else:
+        tabla = crear_tabla_similitudes(
+            df, columna, threshold=threshold, forzar_revision=forzar_revision,
+            block_size=block_size, max_block_size=max_block_size,
+        )
+        col_frec = "FRECUENCIA ORIGINAL"
+ 
+    if tabla.empty:
+        return pd.DataFrame(columns=[
+            "COLUMNA", "PARAMETRO", "FRECUENCIA", "N_VARIANTES",
+            "VARIANTES_UNIFICADAS", "ESTADO",
+        ])
+ 
+    es_anomalia = (
+        (tabla["ANOMALÍA"] != "") | (tabla["ESTADO"] == "POR DETERMINAR")
+    )
+ 
+    # detectar_anomalia solo revisa número/fecha en columnas de nombres
+    # (NOMBRES_APELLIDOS, MAGISTRADO...). Para columnas de categoría de
+    # texto libre (SALA, SOLICITUD, DECISIÓN...) un valor puramente
+    # numérico o con forma de fecha TAMPOCO corresponde -se generaliza
+    # acá en vez de en detectar_anomalia para no afectar IDENTIFICACIÓN,
+    # donde lo numérico sí es lo esperado.
+    if valores_fijos is None and columna != "IDENTIFICACIÓN":
+        tipos = tabla["VALOR ORIGINAL"].map(detectar_tipo_valor)
+        es_anomalia = es_anomalia | tipos.isin(["NUMÉRICO", "FECHA"])
+ 
+    # Con catálogo cerrado, un score muy bajo significa "no es ninguna de
+    # las opciones válidas" -mismo espíritu que una anomalía de tipo,
+    # aunque detectar_anomalia no lo capture (no es un problema de TIPO
+    # de dato, es que no corresponde a NINGUNA categoría del catálogo).
+    if valores_fijos is not None:
+        es_anomalia = es_anomalia | (tabla["SCORE"] < umbral_por_determinar)
+ 
+    filas = []
+ 
+    # 1. "POR DETERMINAR": no corresponden a la columna (una sola fila) ---
+    anomalas = tabla[es_anomalia]
+    if not anomalas.empty:
+        variantes = sorted(anomalas["VALOR ORIGINAL"].tolist())
+        filas.append({
+            "COLUMNA": columna,
+            "PARAMETRO": "POR DETERMINAR",
+            "FRECUENCIA": int(anomalas[col_frec].sum()),
+            "N_VARIANTES": len(variantes),
+            "VARIANTES_UNIFICADAS": "; ".join(variantes),
+            "ESTADO": "POR DETERMINAR",
+        })
+ 
+    resto = tabla[~es_anomalia]
+ 
+    # 2. AUTOMÁTICO: se funden en un solo parámetro por VALOR PROPUESTO ---
+    automaticos = resto[resto["ESTADO"] == "AUTOMÁTICO"]
+    for propuesto, grupo in automaticos.groupby("VALOR PROPUESTO"):
+        variantes = sorted(v for v in grupo["VALOR ORIGINAL"] if v != propuesto)
+        filas.append({
+            "COLUMNA": columna,
+            "PARAMETRO": propuesto,
+            "FRECUENCIA": int(grupo[col_frec].sum()),
+            "N_VARIANTES": len(variantes),
+            "VARIANTES_UNIFICADAS": "; ".join(variantes),
+            "ESTADO": "AUTOMÁTICO",
+        })
+ 
+    # 3. DUDOSO: se dejan solos, cada uno su propio parámetro ---
+    dudosos = resto[resto["ESTADO"] == "PARA REVISAR"]
+    for _, fila in dudosos.iterrows():
+        nota = (
+            f"(similar a '{fila['VALOR PROPUESTO']}', score {fila['SCORE']})"
+            if fila["VALOR ORIGINAL"] != fila["VALOR PROPUESTO"] else ""
+        )
+        filas.append({
+            "COLUMNA": columna,
+            "PARAMETRO": fila["VALOR ORIGINAL"],
+            "FRECUENCIA": int(fila[col_frec]),
+            "N_VARIANTES": 0,
+            "VARIANTES_UNIFICADAS": nota,
+            "ESTADO": "DUDOSO",
+        })
+ 
+    resultado = pd.DataFrame(filas, columns=[
+        "COLUMNA", "PARAMETRO", "FRECUENCIA", "N_VARIANTES",
+        "VARIANTES_UNIFICADAS", "ESTADO",
+    ])
+    orden = {"POR DETERMINAR": 0, "DUDOSO": 1, "AUTOMÁTICO": 2}
+    resultado["_orden"] = resultado["ESTADO"].map(orden)
+    
+    return (
+        resultado
+        .sort_values(["_orden", "FRECUENCIA"], ascending=[True, False])
+        .drop(columns="_orden")
+        .reset_index(drop=True)
+    )
 
 
 def extract_multi_ius(df):
