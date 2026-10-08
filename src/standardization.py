@@ -188,41 +188,58 @@ def standardize_reparto_column(serie, min_year=2017, max_year=None):
 
     return fecha_final.dt.date, categoria
 
+COLUMNAS_MAYUSCULA_SIN_TILDE = (
+    "NOMBRES_APELLIDOS",
+    "MAGISTRADO",
+    "FUNCIONARIO A CARGO",
+    "SALA",
+    "SOLICITUD",
+    "DECISIÓN",
+    "PERTENECE",
+    "DELEGADA",
+)
 
-def clean_and_standardize(df):
+def clean_and_standardize(df, ya_desdoblado=False, columnas_extra_mayuscula=()):
     """
-    Etapa 3 del pipeline: desdoblado de comparecientes, espaciado en todas
-    las columnas de texto, formato de nombres propios, y estandarización
-    de fechas (FECHA y REPARTO). Retorna el df limpio.
+    `ya_desdoblado=True`: asume que split_multiple_comparecientes (y
+    split_names_by_spacing, si lo usas) ya se corrieron ANTES -por
+    ejemplo, antes de clasificar parámetros, para que la frecuencia de
+    cada nombre se cuente por persona real y no por celda combinada- y
+    no los repite acá.
+ 
+    `columnas_extra_mayuscula`: columnas ADICIONALES (además de las de
+    COLUMNAS_MAYUSCULA_SIN_TILDE) a pasar a mayúsculas sin tilde -útil
+    para TIPO DE EXPEDIENTE, cuyo nombre real en el Excel trae un sufijo
+    variable (ej. "TIPO DE EXPEDIENTE (ELECTRONICO - HIBRIDO)") y no se
+    puede dejar como literal fijo en esta función; resuélvelo con
+    encontrar_columna(df, "TIPO DE EXPEDIENTE") antes de llamar a esta.
     """
     print("\nPROCESANDO ESTANDARIZACIÓN Y LIMPIEZA...\n")
-
-    print(" -> Desdoblando comparecientes múltiples por fila...")
-    df = split_multiple_comparecientes(df, name_col="NOMBRES_APELLIDOS")
-    if "_revisar_multiples" in df.columns:
-        df = df.drop(columns=["_revisar_multiples"])
-
+ 
+    if not ya_desdoblado:
+        print(" -> Desdoblando comparecientes múltiples por fila...")
+        df = split_multiple_comparecientes(df, name_col="NOMBRES_APELLIDOS")
+        if "_revisar_multiples" in df.columns:
+            df = df.drop(columns=["_revisar_multiples"])
+ 
     print(" -> Estandarizando espaciado en todas las columnas...")
     for col in df.columns:
         serie = df[col]
         if pd.api.types.is_string_dtype(serie) or serie.dtype == "object":
             df[col] = standardize_column_spacing(df[col])
-
-    # OPTIMIZACIÓN: ya no se llama a standardize_column_names (que vuelve a
-    # espaciar por dentro); el espaciado ya se aplicó arriba a todas las
-    # columnas de texto, incluidas estas 3. Solo falta mayúsculas + tildes.
-    print(" -> Aplicando formato a Nombres, Magistrados y Funcionario a cargo...")
-    for col in ("NOMBRES_APELLIDOS", "MAGISTRADO", "FUNCIONARIO A CARGO"):
+ 
+    print(" -> Aplicando mayúsculas/sin tilde a columnas de nombre y categoría...")
+    for col in set(COLUMNAS_MAYUSCULA_SIN_TILDE) | set(columnas_extra_mayuscula):
         if col in df.columns:
             df[col] = df[col].str.upper().map(remove_accents)
-
+ 
     print(" -> Estandarizando formato de Fechas y Reparto...")
     if "FECHA" in df.columns:
         df["FECHA"] = standardize_column_dates(df["FECHA"])
     if "REPARTO" in df.columns:
         fecha_reparto, _ = standardize_reparto_column(df["REPARTO"])
         df["REPARTO"] = fecha_reparto
-
+ 
     return df
 
 def add_radicado_ius_revisada(df, ius_col="RADICADO IUS", new_col="Radicado IUS Revisada"):
