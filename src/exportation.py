@@ -160,12 +160,26 @@ def export_multi_sheet_excel(sheets, file_path, table_style="TableStyleMedium2",
                 data.to_excel(writer, sheet_name=safe_name, index=False, header=False, startrow=1)
                 ws = writer.sheets[safe_name]
  
-                ws.add_table(0, 0, len(data), len(data.columns) - 1, {
-                    "style": table_style,
-                    "banded_rows": True,
-                    "columns": [{"header": str(c)} for c in data.columns],
-                })
-                
+                if len(data) > 0:
+                    # add_table() de xlsxwriter exige al menos una fila de
+                    # datos además del encabezado -si no, tira un warning y
+                    # no crea la tabla. Para una hoja vacía (ej. "Archivados"
+                    # sin ningún registro) se escribe el encabezado a mano,
+                    # con el mismo estilo azul aunque sin filtro/tabla.
+                    ws.add_table(0, 0, len(data), len(data.columns) - 1, {
+                        "style": table_style,
+                        "banded_rows": True,
+                        "columns": [{"header": str(c)} for c in data.columns],
+                    })
+                else:
+                    formato_header = writer.book.add_format({
+                        "bold": True, "font_color": "white", "bg_color": "#4472C4",
+                    })
+                    for i, col_name in enumerate(data.columns):
+                        ws.write(0, i, str(col_name), formato_header)
+ 
+                # Autofit calcula el ancho a partir de lo ya escrito en la
+                # hoja, por eso se llama DESPUÉS de to_excel/add_table.
                 ws.autofit()
  
                 if ancho_min is not None or ancho_max is not None:
