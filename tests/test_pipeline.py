@@ -346,3 +346,68 @@ def test_limpieza_no_toca_las_columnas_original_ni_los_vacios():
     assert pd.isna(limpio.loc[0, NAMES]) and limpio.loc[1, NAMES] == "x"
     assert limpio.loc[1, "NOMBRES_APELLIDOS_ORIGINAL"] == " x  \n y "
     assert limpio.loc[0, "SALA_ORIGINAL"] == "  srvr  "
+
+
+# ---------------------------------------------------------------------
+# T22 (validación): pruebas directas que la revisión RF por RF encontró
+# parciales — RF-19, RF-34, RF-41, RF-56 y RF-67.
+# ---------------------------------------------------------------------
+
+def _df_rf41():
+    return pd.DataFrame({
+        "No": range(1, 14),
+        IDENT: ["11111111", "11111111", "11111111", "11111111", "Sin cédula", "Caso 7", None,
+                "22222222", "33333333", "22222222\n33333333", "44444444", "55555555", "No registra"],
+        NAMES: ["Ana Ruiz Diaz", "Ana Ruiz Diaz", "Ana Ruiz Diaz", "Ana Ruiz Dias",     # RF-13: la cédula confirma
+                "Juana Rios Paz",                                                          # RF-33 en IDENTIFICACIÓN
+                "Luis Mora Paz\nEva Rios Gil",                                             # RF-23: un valor que no es cédula
+                "Pedro Gil Paz\nRosa Rey Soto",                                            # RF-67: sin identificación
+                "Mario Andres Lopez Diaz", "Pedro Luis Ruiz Ruiz",
+                "Mario Andres Lopez Diaz Pedro Luis Ruiz Ruiz",                            # RF-24: nombres pegados
+                "Carlos Vega Ruiz y otros",                                                # RF-29
+                "Solicitud de informe\nMarta Sol Vega",                                    # RF-68
+                "Lina Paz Rey"],                                                           # RF-34 en IDENTIFICACIÓN
+        "TIPO DE EXPEDIENTE": ["Agendado", "Fisico y electronico"] + ["FÍSICO"] * 11,     # RF-19, RF-66
+    })
+
+
+def test_rf41_cada_sustitucion_de_la_lista_queda_en_la_tabla():
+    r = pipeline.run(_df_rf41())
+
+    def estado(columna, original):
+        encontradas = [e for e in r.review.entries if e.column == columna and e.original == original]
+        assert encontradas, (columna, original)
+        return encontradas[0]
+
+    assert estado(NAMES, "Ana Ruiz Dias").final == "ANA RUIZ DIAZ"                         # RF-13
+    assert estado("TIPO DE EXPEDIENTE", "Agendado").final == "POR DETERMINAR"               # RF-19
+    assert estado("TIPO DE EXPEDIENTE", "Fisico y electronico").final == "HÍBRIDO"          # RF-66
+    assert estado(IDENT, "Sin cédula").final == "SIN CC"                                    # RF-33
+    no_registra = estado(IDENT, "No registra")                                              # RF-34
+    assert (no_registra.final, no_registra.motive) == ("POR DETERMINAR", "otra categoría")
+    for celda in ("Luis Mora Paz\nEva Rios Gil", "Pedro Gil Paz\nRosa Rey Soto",            # RF-23, RF-67
+                  "Mario Andres Lopez Diaz Pedro Luis Ruiz Ruiz"):                          # RF-24
+        assert estado(NAMES, celda).motive == "varios nombres", celda
+    assert estado(NAMES, "Carlos Vega Ruiz y otros").motive == '"Y OTROS"'                  # RF-29
+    assert estado(NAMES, "Solicitud de informe\nMarta Sol Vega").motive == "línea que no es de persona"   # RF-68
+    for e in r.review.entries:
+        assert e.state in (p.AUTOMATIC, p.REVIEW, p.TO_CONFIRM, p.DECIDED) and e.row_ids
+
+
+def test_rf67_varias_personas_sin_identificacion_quedan_por_determinar_y_sin_confirmar():
+    r = pipeline.run(_df_rf41())
+    filas = r.records[r.records["ID REGISTRO"] == 7]
+
+    assert list(filas[NAMES]) == ["PEDRO GIL PAZ", "ROSA REY SOTO"]
+    assert set(filas[IDENT]) == {"POR DETERMINAR"}
+    assert set(filas["SEPARACIÓN"]) == {"SEPARADA SIN CONFIRMAR"}
+
+
+def test_rf56_codigos_de_sala_por_confirmar_no_se_pintan_ni_cuentan():
+    df = _df().assign(SALA=["SRVR", "SRVR", "SDSJ", "SRVR", "SDSJ"])
+
+    r = pipeline.run(df)
+
+    assert [e for e in r.review.entries if e.column == "SALA" and e.state == p.TO_CONFIRM]
+    assert not any(columna == "SALA" for celdas in r.highlights.values() for _, columna in celdas)
+    assert not any("SALA" in pendiente for pendiente in r.records["_pending"])

@@ -322,3 +322,17 @@ def test_las_cifras_van_alineadas_a_la_derecha(ruta):
 
     assert libro[rx.TABLE_SHEET]["H2"].alignment.horizontal == "right"     # Filas afectadas
     assert libro[rx.SUMMARY_SHEET]["E6"].alignment.horizontal == "right"   # Filas
+
+
+def test_rf96_lo_que_cambio_la_tabla_revisada_queda_sin_decision(tmp_path):
+    # T22: al volver a cargar este Excel, esos cambios los vuelve a hacer la hoja "Mapeo", no una decisión.
+    tabla = p.ReviewedTable.from_rows([("SOLICITUD", "Devolucion", "DEVOLUCIÓN")])
+    r = p.standardize_parameters(pd.DataFrame({"SOLICITUD": ["Devolucion", "Otro valor"]}), table=tabla)
+    destino = Path(tmp_path) / "r.xlsx"
+    rx.write_review(destino, rx.ReviewData(r.entries, r.summary, r.totals, r.catalogs, table=tabla))
+
+    filas = _hoja(destino, rx.TABLE_SHEET)
+    fila = filas[filas["Valor original"] == "Devolucion"]
+    assert list(fila["Estado"]) == [p.DECIDED] and list(fila["Decisión"]) == [""]
+    archivo = rx.read_review(destino)
+    assert archivo.decisions.table == [] and archivo.table.lookup("SOLICITUD", "Devolucion") == "DEVOLUCIÓN"
