@@ -6,11 +6,12 @@ from pathlib import Path
 
 import pandas as pd
 from python_calamine import CalamineError
+from xlsxwriter.utility import xl_col_to_name
 
-from src.exportation import PENDING_FILL  # noqa: F401  (el Resumen explica este color, RF-76)
+from src.exportation import PENDING_FILL
 from src.parameters import (
-    CEDULA_AS_IS, DECIDED, EMPTY_TO_UNDETERMINED, OBSERVATION, PENDING_RESULT, REPLACED, REVIEW, TO_CONFIRM,
-    UNCHANGED, Decisions, ReviewedTable, canonical_column,
+    CEDULA_AS_IS, DECIDED, DECISION_ACCEPT, DECISION_KEEP, EMPTY_TO_UNDETERMINED, OBSERVATION, PENDING_RESULT,
+    REPLACED, REVIEW, TO_CONFIRM, UNCHANGED, Decisions, ReviewedTable, canonical_column,
 )
 from src.text_keys import to_text
 
@@ -22,8 +23,10 @@ SUMMARY_SHEET = "Resumen"
 CATALOG_PREFIX = "Catálogo "
 DECISION_COLUMN = "Decisión"
 CORRECTION_COLUMN = "Corregir a"
-TABLE_COLUMNS = ["Columna", "Valor original", "Valor final o sugerido", "Similitud", "Motivo", "Estado",
-                 "Filas afectadas", "Ubicación", DECISION_COLUMN]
+# "Decisión" va al lado de la sugerencia (cambio 10): es la columna que llena el funcionario. read_review
+# busca las columnas por nombre, así que un Excel con el orden anterior se sigue cargando.
+TABLE_COLUMNS = ["Columna", "Valor original", "Valor final o sugerido", DECISION_COLUMN, "Similitud", "Motivo",
+                 "Estado", "Filas afectadas", "Ubicación"]
 CATALOG_COLUMNS = ["Valor", "Filas", CORRECTION_COLUMN]
 SUMMARY_COLUMNS = ["Sección", "Columna", "Concepto", "Valores", "Filas"]
 MAX_LOCATIONS = 50                                      # RF-37
@@ -94,9 +97,9 @@ def _locations(row_ids, locations) -> str:
 def _table_rows(data: ReviewData) -> list:
     """RF-37 a RF-39: una fila por entrada, primero PARA REVISAR y POR CONFIRMAR, por filas (RF-38)."""
     ordered = sorted(data.entries, key=lambda entry: (_STATE_ORDER.get(entry.state, 2), -len(entry.row_ids)))
-    rows = [[entry.column, entry.original, entry.final,
+    rows = [[entry.column, entry.original, entry.final, entry.decision or "",
              "" if entry.similarity is None else f"{entry.similarity:.1f}", entry.motive, entry.state,
-             str(len(entry.row_ids)), _locations(entry.row_ids, data.locations), entry.decision or ""]
+             str(len(entry.row_ids)), _locations(entry.row_ids, data.locations)]
             for entry in ordered]
     if data.decisions is not None:                                                    # RF-46
         written = {(entry.column, entry.original, entry.decision) for entry in data.entries if entry.decision}
@@ -104,7 +107,7 @@ def _table_rows(data: ReviewData) -> list:
             key = (_text(column).strip(), _text(original).strip(), _text(text))
             if key not in written:
                 written.add(key)
-                rows.append([key[0], _text(original), "", "", "decisión", DECIDED, "0", "", key[2]])
+                rows.append([key[0], _text(original), "", key[2], "", "decisión", DECIDED, "0", ""])
     return rows
 
 
@@ -157,24 +160,130 @@ def _summary_rows(data: ReviewData) -> list:
     return rows
 
 
+README_SHEET = "Léeme"
+_STATE_FILLS = {REVIEW: PENDING_FILL, TO_CONFIRM: "#DDEBF7", DECIDED: "#E2EFDA"}      # RF-97
+_DECISION_HELP = ("Elija ACEPTAR (usar el valor sugerido) o MANTENER (dejar el valor como estaba), o escriba "
+                  "el valor correcto. Para separar nombres: las partes separadas por « | ».")
+_CORRECTION_HELP = ("Escriba el valor correcto: cambia este valor y todas sus variantes en el resultado. "
+                    "Déjelo vacío si el valor está bien.")
+
+
+def _formats(book) -> dict:
+    """Estilo de la lista de parámetros de la reunión (RF-97): encabezado azul oscuro, texto arriba."""
+    header = {"bold": True, "font_color": "#FFFFFF", "text_wrap": True, "valign": "top", "border": 1}
+    return {
+        "header": book.add_format({**header, "bg_color": "#1F4E78"}),
+        "to_fill": book.add_format({**header, "bg_color": "#548235"}),     # columnas que llena el funcionario
+        "top": book.add_format({"valign": "top"}),
+        "wrap": book.add_format({"valign": "top", "text_wrap": True}),
+        "right": book.add_format({"valign": "top", "align": "right"}),        # cifras (escritas como texto)
+        "title": book.add_format({"bold": True, "font_size": 14}),
+        "label": book.add_format({"bold": True, "valign": "top"}),
+        **{state: book.add_format({"bg_color": color}) for state, color in _STATE_FILLS.items()},
+    }
+
+
+def _styled_sheet(writer, name, rows, columns, widths, fmt, freeze=(1, 0), wrap=(), to_fill=(), right=()):
+    """Escribe una hoja como texto (Decisión #11) con encabezado de color, anchos, fila fija y filtro (RF-97)."""
+    pd.DataFrame(rows, columns=columns, dtype=object).to_excel(writer, sheet_name=name, index=False)
+    sheet = writer.sheets[name]
+    for col, title in enumerate(columns):
+        sheet.write_string(0, col, title, fmt["to_fill"] if title in to_fill else fmt["header"])
+    for col, width in enumerate(widths):
+        sheet.set_column(col, col, width, fmt["wrap"] if col in wrap else fmt["right"] if col in right else fmt["top"])
+    sheet.set_row(0, 30)
+    sheet.freeze_panes(*freeze)
+    sheet.autofilter(0, 0, len(rows), len(columns) - 1)
+    # Todo va como texto a propósito (Decisión #11): sin el triángulo verde de "número guardado como texto".
+    sheet.ignore_errors({"number_stored_as_text": f"A1:{xl_col_to_name(len(columns) - 1)}{len(rows) + 1}"})
+    return sheet
+
+
+def _readme_rows(data: ReviewData) -> list:
+    """RF-97: qué es el archivo, cuánto quedó pendiente, colores y cómo decidir y cargar."""
+    pending = [entry for entry in data.entries if entry.state == REVIEW]
+    values = len({(entry.column, entry.original) for entry in pending})
+    rows = len({row_id for entry in pending for row_id in entry.row_ids})
+    pendientes = (f"Pendientes de revisión: {values:,} {'valor' if values == 1 else 'valores'} en {rows:,} "
+                  f"{'fila' if rows == 1 else 'filas'}. Están en amarillo en la «{TABLE_SHEET}» y en el resultado."
+                  if values else "No quedaron valores pendientes de revisión.")
+    lines = [
+        ("Qué es", "La lista de los valores que el programa cambió o dejó pendientes al estandarizar el "
+                   "resultado, para que usted los revise y decida."),
+        ("Pendientes", pendientes),
+        ("Colores", "En la «Tabla de estandarización»: amarillo = PARA REVISAR (lo decide usted; en el "
+                    "resultado esas celdas también están en amarillo) · azul = POR CONFIRMAR (código de SALA "
+                    "nuevo) · verde = DECIDIDO (ya tiene una decisión) · sin color = el programa lo cambió solo."),
+        ("Cómo decidir", f"En la columna «{DECISION_COLUMN}» elija de la lista ACEPTAR (usar el valor sugerido) "
+                         "o MANTENER (dejar el valor como estaba), o escriba el valor correcto. Las filas sin "
+                         "decisión no cambian nada."),
+        ("Separar nombres", f"Para separar una celda con varios nombres, escriba en «{DECISION_COLUMN}» las "
+                            "partes separadas por « | ». Ejemplo: ANA RUIZ DIAZ | LUIS MORA PAZ."),
+        ("Corregir el catálogo", f"En las hojas «{CATALOG_PREFIX}…», escriba en «{CORRECTION_COLUMN}» el valor "
+                                 "correcto: cambia ese valor y todas sus variantes."),
+        ("Aplicar las decisiones", "Guarde y cierre este archivo. En el programa: «Seleccionar archivo» (la base "
+                                   "original) → «Cargar revisión…» → elija este archivo. Sale un resultado nuevo con "
+                                   "sus decisiones y un Excel de revisión nuevo que las conserva."),
+        ("Hojas", f"{TABLE_SHEET}: lo que cambió o quedó pendiente, valor por valor. {SUMMARY_SHEET}: cifras por "
+                  f"columna, verificación de totales y separación de comparecientes. {CATALOG_PREFIX}…: los "
+                  f"valores finales de cada columna. {MAPEO_SHEET}: la tabla de parámetros revisada por el "
+                  "supervisor, si se aplicó."),
+        ("Datos personales", "Este archivo tiene nombres e identificaciones de comparecientes: no lo envíe ni lo "
+                             "suba a plataformas externas."),
+    ]
+    if data.saved_as:
+        lines.append(("Este archivo", data.saved_as))
+    return lines
+
+
+def _write_readme(book, data: ReviewData, fmt) -> None:
+    sheet = book.add_worksheet(README_SHEET)
+    sheet.set_column(0, 0, 26)
+    sheet.set_column(1, 1, 110)
+    sheet.write_string(0, 0, "Excel de revisión — Limpieza de base de datos (Procuraduría/JEP)", fmt["title"])
+    for row, (label, text) in enumerate(_readme_rows(data), start=2):
+        sheet.write_string(row, 0, label, fmt["label"])
+        sheet.write_string(row, 1, text, fmt["wrap"])
+
+
 def write_review(path, data: ReviewData) -> None:
     """
-    Escribe el Excel de revisión: la tabla de estandarización con "Decisión"
-    vacía (salvo las decisiones copiadas), el Resumen, una hoja de catálogo
-    por columna con "Corregir a" y, si se aplicó una tabla revisada, la hoja
+    Escribe el Excel de revisión: la hoja "Léeme" (RF-97), la tabla de
+    estandarización con "Decisión" vacía (salvo las decisiones copiadas) y su
+    lista ACEPTAR/MANTENER (RF-98), el Resumen, una hoja de catálogo por
+    columna con "Corregir a" y, si se aplicó una tabla revisada, la hoja
     "Mapeo" (RF-36 a RF-39, RF-42, RF-43, RF-46, RF-96). Todo como texto
-    (Decisión #11), así la clave (columna, valor original) vuelve igual.
+    (Decisión #11), así la clave (columna, valor original) vuelve igual; el
+    estilo no cambia las columnas que lee `read_review`.
     """
     with pd.ExcelWriter(path, engine="xlsxwriter") as writer:
-        pd.DataFrame(_table_rows(data), columns=TABLE_COLUMNS, dtype=object).to_excel(
-            writer, sheet_name=TABLE_SHEET, index=False)
-        pd.DataFrame(_summary_rows(data), columns=SUMMARY_COLUMNS, dtype=object).to_excel(
-            writer, sheet_name=SUMMARY_SHEET, index=False)
+        fmt = _formats(writer.book)
+        _write_readme(writer.book, data, fmt)
+
+        rows = _table_rows(data)
+        sheet = _styled_sheet(writer, TABLE_SHEET, rows, TABLE_COLUMNS, [20, 36, 36, 30, 9, 24, 15, 9, 40], fmt,
+                              freeze=(1, 2), wrap=(1, 2, 5), to_fill=(DECISION_COLUMN,), right=(4, 7))
+        if rows:
+            last, state_col = len(rows), chr(ord("A") + TABLE_COLUMNS.index("Estado"))
+            for state in _STATE_FILLS:                                                  # RF-97
+                sheet.conditional_format(1, 0, last, len(TABLE_COLUMNS) - 1, {
+                    "type": "formula", "criteria": f'=${state_col}2="{state}"', "format": fmt[state]})
+            decision_col = TABLE_COLUMNS.index(DECISION_COLUMN)
+            sheet.data_validation(1, decision_col, last, decision_col, {                 # RF-98
+                "validate": "list", "source": [DECISION_ACCEPT, DECISION_KEEP], "show_error": False,
+                "input_title": DECISION_COLUMN, "input_message": _DECISION_HELP})
+
+        _styled_sheet(writer, SUMMARY_SHEET, _summary_rows(data), SUMMARY_COLUMNS, [26, 24, 70, 12, 12], fmt,
+                      wrap=(2,), right=(3, 4))
         for column, catalog in data.catalogs.items():
-            pd.DataFrame(_catalog_rows(column, catalog, data.decisions), columns=CATALOG_COLUMNS, dtype=object).to_excel(
-                writer, sheet_name=f"{CATALOG_PREFIX}{column}"[:31], index=False)
+            rows = _catalog_rows(column, catalog, data.decisions)
+            sheet = _styled_sheet(writer, f"{CATALOG_PREFIX}{column}"[:31], rows, CATALOG_COLUMNS, [50, 10, 40],
+                                  fmt, wrap=(0,), to_fill=(CORRECTION_COLUMN,), right=(1,))
+            if rows:
+                sheet.data_validation(1, 2, len(rows), 2, {
+                    "validate": "any", "input_title": CORRECTION_COLUMN, "input_message": _CORRECTION_HELP})
         if data.table is not None:
-            write_mapeo_sheet(writer, data.table)
+            write_mapeo_sheet(writer, data.table, fmt)
 
 
 def _read_decisions(book, sheets) -> Decisions:
@@ -228,14 +337,14 @@ def read_review(path) -> ReviewFile:
     return ReviewFile(table, has_decisions, decisions)
 
 
-def write_mapeo_sheet(writer: pd.ExcelWriter, table: ReviewedTable) -> None:
+def write_mapeo_sheet(writer: pd.ExcelWriter, table: ReviewedTable, fmt=None) -> None:
     """
     Copia la tabla de parámetros revisados completa, como texto, en la hoja
     "Mapeo" del Excel de revisión (RF-96): así, al volver a cargar ese Excel,
     se aplican la tabla y las decisiones nuevas (RF-89).
     """
-    pd.DataFrame(table.rows, columns=MAPEO_COLUMNS, dtype=object).to_excel(
-        writer, sheet_name=MAPEO_SHEET, index=False)
+    _styled_sheet(writer, MAPEO_SHEET, table.rows, MAPEO_COLUMNS, [24, 50, 50],
+                  fmt if fmt is not None else _formats(writer.book), wrap=(1, 2))
 
 
 # ---------------------------------------------------------------------------

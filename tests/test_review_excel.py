@@ -233,3 +233,92 @@ def test_con_tabla_revisada_el_excel_trae_mapeo_y_al_recargarlo_aplica_la_tabla_
 
     assert "Mapeo" in pd.ExcelFile(destino, engine="calamine").sheet_names
     assert list(segunda.df["SOLICITUD"]) == ["DEVOLUCIÓN", "OTRO", "VALOR NUEVO"]
+
+
+# ---------------------------------------------------------------------
+# Cambio 10 (T27): presentación (RF-97) y lista en "Decisión" (RF-98)
+# ---------------------------------------------------------------------
+
+def _libro(ruta):
+    import openpyxl
+    return openpyxl.load_workbook(ruta)
+
+
+def test_la_primera_hoja_es_leeme_y_explica_lo_pendiente(ruta):
+    libro = _libro(ruta)
+    hoja = libro.worksheets[0]
+    texto = "\n".join(str(c.value) for fila in hoja.iter_rows() for c in fila if c.value)
+
+    assert hoja.title == "Léeme"
+    assert "3 valores en 6 filas" in texto                           # los PARA REVISAR de _entries()
+    assert "Cargar revisión" in texto and "ACEPTAR" in texto and "MANTENER" in texto
+
+
+def test_encabezados_con_color_fila_fija_y_filtro(ruta):
+    hoja = _libro(ruta)[rx.TABLE_SHEET]
+    encabezado = hoja["A1"]
+
+    assert encabezado.fill.fgColor.rgb.endswith("1F4E78") and encabezado.font.bold
+    assert hoja.freeze_panes == "C2"
+    assert hoja.auto_filter.ref == "A1:I9"
+    assert hoja.column_dimensions["B"].width > 30                     # "Valor original" se puede leer
+
+
+def test_decision_tiene_lista_aceptar_mantener_que_acepta_otro_texto(ruta):
+    hoja = _libro(ruta)[rx.TABLE_SHEET]
+    validacion, = hoja.data_validations.dataValidation
+
+    assert validacion.type == "list"
+    assert validacion.formula1 == '"ACEPTAR,MANTENER"'
+    assert not validacion.showErrorMessage                            # otro texto no se bloquea
+    assert validacion.prompt and "|" in validacion.prompt
+    assert str(validacion.sqref) == "D2:D9"           # al lado de la sugerencia
+
+
+def test_pendientes_en_amarillo_por_formato_condicional(ruta):
+    hoja = _libro(ruta)[rx.TABLE_SHEET]
+    reglas = [regla for rango in hoja.conditional_formatting for regla in rango.rules]
+
+    pendiente = [r for r in reglas if r.formula and "PARA REVISAR" in r.formula[0]]
+    assert pendiente and pendiente[0].dxf.fill.bgColor.rgb.endswith(rx.PENDING_FILL[1:])
+
+
+def test_corregir_a_tiene_mensaje_de_ayuda(ruta):
+    hoja = _libro(ruta)["Catálogo SOLICITUD"]
+    validacion, = hoja.data_validations.dataValidation
+
+    assert validacion.prompt and "variantes" in validacion.prompt
+
+
+def test_con_la_presentacion_nueva_las_decisiones_vuelven_iguales(ruta):
+    # RF-97: los valores siguen siendo texto y las hojas que se cargan conservan sus columnas.
+    archivo = rx.read_review(ruta)
+
+    assert ("IDENTIFICACIÓN", "0012", "") not in archivo.decisions.table
+    assert (NAMES, "Ana Ruiz\nLuis Mora", "Ana Ruiz | Luis Mora") in archivo.decisions.table
+
+
+def test_decision_va_al_lado_de_la_sugerencia(ruta):
+    hoja = _libro(ruta)[rx.TABLE_SHEET]
+
+    assert [hoja.cell(1, c).value for c in (3, 4)] == ["Valor final o sugerido", "Decisión"]
+    assert hoja.cell(1, 4).fill.fgColor.rgb.endswith("548235")          # columna para llenar, en verde
+
+
+def test_un_excel_de_revision_con_el_orden_de_columnas_anterior_se_sigue_cargando(tmp_path):
+    destino = Path(tmp_path) / "viejo.xlsx"
+    viejo = ["Columna", "Valor original", "Valor final o sugerido", "Similitud", "Motivo", "Estado",
+             "Filas afectadas", "Ubicación", "Decisión"]
+    pd.DataFrame([["DECISIÓN", "agendada", "AGENDADO", "87.5", "similitud 80–89", p.REVIEW, "1", "", "ACEPTAR"]],
+                 columns=viejo).to_excel(destino, sheet_name=rx.TABLE_SHEET, index=False)
+
+    archivo = rx.read_review(destino)
+
+    assert archivo.decisions.table == [("DECISIÓN", "agendada", "ACEPTAR")]
+
+
+def test_las_cifras_van_alineadas_a_la_derecha(ruta):
+    libro = _libro(ruta)
+
+    assert libro[rx.TABLE_SHEET]["H2"].alignment.horizontal == "right"     # Filas afectadas
+    assert libro[rx.SUMMARY_SHEET]["E6"].alignment.horizontal == "right"   # Filas
