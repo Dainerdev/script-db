@@ -1,4 +1,6 @@
+import ctypes
 import queue
+import sys
 import threading
 import tkinter as tk
 from datetime import datetime
@@ -37,9 +39,16 @@ class App:
         # spec 002 suma el resumen de la estandarización (con scroll). La
         # altura se ajusta a la pantalla (T21: en una más baja, la ventana
         # quedaba detrás de la barra de tareas); el resumen tiene scroll.
-        alto = min(680, self.root.winfo_screenheight() - 80)
-        self.root.geometry(f"900x{alto}")
-        self.root.minsize(760, min(560, alto))
+        # Los tamaños en píxeles se multiplican por la escala de la pantalla
+        # (1 al 100 %): la app es consciente del DPI (ver main) y Windows ya no
+        # la estira, así que se ven igual que antes pero nítidos.
+        self._scale = self.root.winfo_fpixels("1i") / 96.0
+        alto = min(round(680 * self._scale), self.root.winfo_screenheight() - 80)
+        ancho = round(900 * self._scale)
+        # Pegada arriba y centrada a lo ancho, para que no la tape la barra de tareas.
+        izquierda = max(0, (self.root.winfo_screenwidth() - ancho) // 2)
+        self.root.geometry(f"{ancho}x{alto}+{izquierda}+0")
+        self.root.minsize(round(760 * self._scale), min(round(560 * self._scale), alto))
 
         self.queue: queue.Queue = queue.Queue()
         self.selected_path: str | None = None
@@ -74,7 +83,7 @@ class App:
         frame.grid(sticky="nsew")
         frame.columnconfigure(1, weight=1)
 
-        WRAP = 720
+        WRAP = round(720 * self._scale)
 
         self.select_button = ttk.Button(frame, text="Seleccionar archivo", command=self._on_select_file)
         self.select_button.grid(row=0, column=0, sticky="w")
@@ -137,6 +146,32 @@ class App:
                 self.root.iconbitmap(str(icon_path))
             except tk.TclError:
                 pass
+            if sys.platform == "win32":
+                # Después de que Tk cree la ventana de Windows (al mostrarla).
+                self.root.after_idle(lambda: self._set_native_icons(icon_path))
+
+    def _set_native_icons(self, icon_path):
+        """
+        T21 (spec 002): Tk elige siempre los íconos de 16 y 32 px del .ico,
+        sin importar la escala de la pantalla; al 125 % Windows los estira y
+        se ven borrosos en la barra de título y en la barra de tareas. Aquí se
+        cargan con el tamaño que pide Windows a esta escala (20 y 40 px al
+        125 %, 24 y 48 al 150 %), que el .ico trae.
+        """
+        try:
+            user32 = ctypes.windll.user32
+            user32.LoadImageW.restype = ctypes.c_void_p
+            user32.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint,
+                                          ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+            user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+            hwnd = int(self.root.wm_frame(), 16)
+            for which, metric in ((0, 49), (1, 11)):          # ICON_SMALL / SM_CXSMICON, ICON_BIG / SM_CXICON
+                size = user32.GetSystemMetrics(metric)
+                hicon = user32.LoadImageW(None, str(icon_path), 1, size, size, 0x10)   # IMAGE_ICON, LR_LOADFROMFILE
+                if hicon:
+                    user32.SendMessageW(hwnd, 0x0080, which, hicon)                    # WM_SETICON
+        except (AttributeError, OSError, ValueError, tk.TclError):
+            pass
 
     # ------------------------------------------------------------------
     # RF-1/RF-2/RF-3/RF-4: selección, lectura, validación, diagnóstico
@@ -572,7 +607,26 @@ class App:
         self.root.destroy()
 
 
+def _enable_dpi_awareness():
+    """
+    T21 (spec 002): avisa a Windows que la app maneja el escalado de la
+    pantalla, como hace IDLE. Sin esto, con la pantalla al 125 % Windows
+    dibuja la ventana al 100 % y la estira: el texto y los íconos (también
+    el de la barra de tareas) se ven borrosos. Va antes de crear tk.Tk().
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.OleDLL("shcore").SetProcessDpiAwareness(1)
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
+
+
 def main():
+    _enable_dpi_awareness()
     root = tk.Tk()
     App(root)
     root.mainloop()

@@ -24,6 +24,31 @@ def test_window_height_fits_a_short_screen(root, monkeypatch):
     assert alto <= 600 - 80
 
 
+def test_window_opens_at_the_top_centered(root, monkeypatch):
+    # T21: pegada arriba (y = 0) y centrada a lo ancho.
+    monkeypatch.setattr(root, "winfo_screenwidth", lambda: 1900)
+    monkeypatch.setattr(root, "winfo_fpixels", lambda distancia: 96.0)
+
+    App(root)
+    root.update_idletasks()
+
+    assert root.geometry().endswith("+500+0")             # (1900 - 900) / 2 = 500
+
+
+def test_sizes_scale_with_the_screen_dpi(root, monkeypatch):
+    # T21: con la app consciente del DPI, en una pantalla al 125 % (120 ppp)
+    # los tamaños en píxeles se multiplican por 1,25 para verse igual que antes.
+    monkeypatch.setattr(root, "winfo_fpixels", lambda distancia: 120.0)
+    monkeypatch.setattr(root, "winfo_screenheight", lambda: 2000)
+
+    app = App(root)
+    root.update_idletasks()
+
+    ancho, resto = root.geometry().split("x")
+    assert (int(ancho), int(resto.split("+")[0])) == (1125, 850)
+    assert int(str(app.path_label["wraplength"])) == 900
+
+
 def test_initial_state_is_idle(root):
     app = App(root)
     assert app.df is None
