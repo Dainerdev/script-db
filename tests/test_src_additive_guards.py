@@ -2,7 +2,8 @@ import pandas as pd
 import pytest
 
 from src.reading import read_excel_file
-from src.standardization import split_multiple_comparecientes, add_radicado_ius_revisada
+from src.comparecientes import separate
+from src.standardization import add_radicado_ius_revisada
 from src.diagnostic import split_by_status, run_similarity_report
 from src.exportation import export_multi_sheet_excel, ExportCancelled
 
@@ -21,23 +22,29 @@ def test_read_excel_file_missing_file_raise_errors_propagates():
 
 
 # ---------------------------------------------------------------------
-# split_multiple_comparecientes: guarda de columnas ausentes
+# Separar comparecientes: guarda de columnas ausentes
+# (spec 002, T15: split_multiple_comparecientes se reemplazó por
+# comparecientes.separate, que además deja en cada fila el grupo completo
+# de cédulas en vez de repartirlas, RF-22)
 # ---------------------------------------------------------------------
 
-def test_split_multiple_comparecientes_missing_columns_returns_df_unchanged():
+def test_separate_missing_columns_keeps_rows_and_values():
     df = pd.DataFrame({"OTRA_COLUMNA": ["x", "y"]})
-    resultado = split_multiple_comparecientes(df, name_col="NOMBRES_APELLIDOS", id_col="IDENTIFICACIÓN")
-    pd.testing.assert_frame_equal(resultado, df)
+    resultado = separate(df).df
+    assert list(resultado["OTRA_COLUMNA"]) == ["x", "y"]
+    assert list(resultado["ID REGISTRO"]) == [1, 2]
 
 
-def test_split_multiple_comparecientes_present_columns_regression():
+def test_separate_present_columns_regression():
     df = pd.DataFrame({
         "NOMBRES_APELLIDOS": ["JUAN PEREZ\nMARIA LOPEZ"],
-        "IDENTIFICACIÓN": ["111\n222"],
+        "IDENTIFICACIÓN": ["11111111\n22222222"],
     })
-    resultado = split_multiple_comparecientes(df)
+    resultado = separate(df).df
     assert len(resultado) == 2
     assert set(resultado["NOMBRES_APELLIDOS"]) == {"JUAN PEREZ", "MARIA LOPEZ"}
+    assert set(resultado["IDENTIFICACIÓN"]) == {"11111111\n22222222"}
+    assert set(resultado["SEPARACIÓN"]) == {"SEPARADA"}
 
 
 # ---------------------------------------------------------------------

@@ -1,9 +1,14 @@
 #exportartion.py
 import copy as _copy
+import datetime
+import math
+import posixpath
 import re
+import xml.etree.ElementTree as ET
+import zipfile
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import column_index_from_string, get_column_letter
 
 
 def _nombre_estilo_tabla_xlsxwriter(nombre_openpyxl):
@@ -113,6 +118,99 @@ def read_header_style(source_path, source_sheet=None):
     }
 
 
+_XML = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+        "rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
+_R_ID = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+_ESCAPE = re.compile(r"_x([0-9A-Fa-f]{4})_")
+
+
+def _decode_xstring(text):
+    """Excel escribe en el XML algunos caracteres como _xHHHH_ (un salto de línea es _x000a_)."""
+    return _ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
+
+
+def _part(base_dir, target):
+    """Ruta dentro del zip de un Target de relación (relativo a la carpeta de la parte, o absoluto)."""
+    if target.startswith("/"):
+        return target[1:]
+    return posixpath.normpath(posixpath.join(base_dir, target))
+
+
+def _relations(z, part):
+    """{Id: (Type, ruta)} de las relaciones de una parte del .xlsx."""
+    folder, name = posixpath.split(part)
+    rels_path = posixpath.join(folder, "_rels", f"{name}.rels")
+    if rels_path not in z.namelist():
+        return {}
+    root = ET.fromstring(z.read(rels_path))
+    return {r.get("Id"): (r.get("Type", ""), _part(folder, r.get("Target", "")))
+            for r in root.findall("rel:Relationship", _XML)}
+
+
+def read_table_layout(source_path, source_sheet=None):
+    """
+    Lo mismo que read_header_style usa la exportación —alto de la fila 1,
+    ancho de cada columna por nombre, ancho promedio, estilo de la tabla y si
+    tiene bandas—, leído directo del XML del .xlsx (spec 002, T20). No carga
+    las filas: read_header_style abre el libro completo con openpyxl y con el
+    corte del 5 de agosto (130 MB de hoja más 111 MB de caché de una tabla
+    dinámica) tardaba 414 s. Los nombres salen de la Tabla de Excel de la
+    hoja; si la hoja no tiene tabla, o algo del XML no se entiende, usa
+    read_header_style. A diferencia de openpyxl, una columna dentro de un
+    rango (<col min="21" max="23">) toma el ancho del rango, como en el
+    original (openpyxl solo se lo daba a la primera).
+    """
+    try:
+        layout = _read_table_layout_xml(source_path, source_sheet)
+    except (KeyError, ValueError, ET.ParseError, zipfile.BadZipFile):
+        layout = None
+    return layout if layout is not None else read_header_style(source_path, source_sheet)
+
+
+def _read_table_layout_xml(source_path, source_sheet):
+    with zipfile.ZipFile(source_path) as z:
+        workbook = ET.fromstring(z.read("xl/workbook.xml"))
+        sheets = workbook.findall("m:sheets/m:sheet", _XML)
+        if source_sheet is None:
+            view = workbook.find("m:bookViews/m:workbookView", _XML)
+            sheet = sheets[int(view.get("activeTab", 0)) if view is not None else 0]
+        else:
+            sheet = next(s for s in sheets if s.get("name") == source_sheet)
+        sheet_part = _relations(z, "xl/workbook.xml")[sheet.get(_R_ID)][1]
+
+        tables = [path for kind, path in _relations(z, sheet_part).values() if kind.endswith("/table")]
+        if not tables:
+            return None
+        table = ET.fromstring(z.read(tables[0]))
+        names = [_decode_xstring(c.get("name", "")) for c in table.findall("m:tableColumns/m:tableColumn", _XML)]
+        first_column = column_index_from_string(re.match(r"[A-Z]+", table.get("ref")).group())
+        style_info = table.find("m:tableStyleInfo", _XML)
+
+        widths, row_height = {}, None
+        with z.open(sheet_part) as stream:
+            for event, element in ET.iterparse(stream, events=("start", "end")):
+                tag = element.tag.rsplit("}", 1)[-1]
+                if event == "end" and tag == "col" and element.get("width"):
+                    for index in range(int(element.get("min")), int(element.get("max")) + 1):
+                        widths[index] = float(element.get("width"))
+                elif event == "start" and tag == "row":          # lo de antes de la primera fila ya pasó
+                    if element.get("r", "1") == "1" and element.get("ht"):
+                        row_height = float(element.get("ht"))
+                    break
+
+    anchos_por_nombre = {name.strip(): widths.get(first_column + i) for i, name in enumerate(names)}
+    validos = [w for w in anchos_por_nombre.values() if w]
+    return {
+        "font": None,
+        "alignment": None,
+        "row_height": row_height,
+        "anchos_por_nombre": anchos_por_nombre,
+        "ancho_default": sum(validos) / len(validos) if validos else None,
+        "table_style": style_info.get("name") if style_info is not None else None,
+        "banded_rows": style_info.get("showRowStripes", "1") in ("1", "true") if style_info is not None else True,
+    }
+
+
 def apply_header_style(ws, columns, style_ref):
     """
     Aplica a `ws` el estilo leído con read_header_style(). Las columnas que
@@ -142,8 +240,28 @@ class ExportCancelled(Exception):
     """El usuario canceló la exportación a mitad de camino (should_cancel)."""
 
 
+# Relleno de las celdas con un valor pendiente de revisión (spec 002, RF-40).
+PENDING_FILL = "#FFEB9C"
+
+
+def _write_highlighted(ws, row, col, value, fill, date_fill):
+    """Reescribe una celda ya escrita con el relleno de pendiente, conservando su tipo (texto, número, fecha, vacío)."""
+    if value is None or value is pd.NaT:
+        ws.write_blank(row, col, None, fill)
+    elif isinstance(value, (datetime.datetime, datetime.date)):            # también pd.Timestamp
+        ws.write_datetime(row, col, value, date_fill)
+    else:
+        if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+            value = value.item()                                            # numpy → tipo de Python
+        if isinstance(value, float) and math.isnan(value):
+            ws.write_blank(row, col, None, fill)
+        else:
+            ws.write(row, col, value, fill)
+
+
 def export_multi_sheet_excel(sheets, file_path, style_reference_path=None, style_reference_sheet=None,
-                              raise_errors=False, on_sheet_done=None, on_sheet_start=None, should_cancel=None):
+                              raise_errors=False, on_sheet_done=None, on_sheet_start=None, should_cancel=None,
+                              highlight_cells=None):
     """
     Exporta varios DataFrames a un mismo archivo Excel, un sheet por cada
     entrada de `sheets` (dict: nombre_de_hoja -> DataFrame). Aplica el
@@ -185,9 +303,17 @@ def export_multi_sheet_excel(sheets, file_path, style_reference_path=None, style
     ExportCancelled (subclase de Exception: sigue el mismo camino de
     raise_errors que cualquier otro error, pero el caller puede
     distinguirla con un except aparte).
+
+    highlight_cells (spec 002, RF-40, Decisión #7; opcional, por defecto
+    None: el archivo sale igual que antes) es un dict nombre_de_hoja ->
+    lista de (posición de la fila en el DataFrame, nombre de la columna):
+    esas celdas se reescriben con el relleno PENDING_FILL. Se pinta la
+    celda exacta; un formato condicional no sabría qué columna de la fila
+    quedó pendiente.
     """
     try:
-        style_ref = read_header_style(style_reference_path, style_reference_sheet) if style_reference_path else None
+        # T20: read_table_layout lee el XML sin cargar las filas (read_header_style tardaba 414 s con el corte).
+        style_ref = read_table_layout(style_reference_path, style_reference_sheet) if style_reference_path else None
         estilo_tabla = _nombre_estilo_tabla_xlsxwriter(style_ref["table_style"]) if style_ref else None
 
         # date_format/datetime_format van en el CONSTRUCTOR de ExcelWriter:
@@ -202,6 +328,8 @@ def export_multi_sheet_excel(sheets, file_path, style_reference_path=None, style
         ) as writer:
             workbook = writer.book
             total_hojas = len(sheets)
+            fill = workbook.add_format({"bg_color": PENDING_FILL, "pattern": 1})
+            date_fill = workbook.add_format({"bg_color": PENDING_FILL, "pattern": 1, "num_format": "dd/mm/yyyy"})
 
             for indice, (sheet_name, data) in enumerate(sheets.items(), start=1):
                 if should_cancel and should_cancel():
@@ -239,6 +367,12 @@ def export_multi_sheet_excel(sheets, file_path, style_reference_path=None, style
                     ancho = style_ref["anchos_por_nombre"].get(col_str, style_ref.get("ancho_default")) if style_ref else None
                     if ancho:
                         ws.set_column(i, i, ancho)
+
+                if highlight_cells and highlight_cells.get(sheet_name):          # RF-40
+                    position_of = {str(c): i for i, c in enumerate(data.columns)}
+                    for row, column in highlight_cells[sheet_name]:
+                        col = position_of[str(column)]
+                        _write_highlighted(ws, row + 1, col, data.iat[row, col], fill, date_fill)
 
                 if on_sheet_done:
                     on_sheet_done(sheet_name, indice, total_hojas)

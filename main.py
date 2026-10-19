@@ -1,77 +1,88 @@
-from src.reading import *
-from src.standardization import *
-from src.exportation import *
-from src.diagnostic import *
+from pathlib import Path
+
+from src.reading import read_excel_file, excel_general_information
+from src.diagnostic import run_diagnostics
+from src.parameters import TotalsMismatchError
+from src.pipeline import run as run_pipeline, save
+from src.review_excel import ReviewFileError, read_review
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+FILE_EXCEL = "data/original/base_pasantes.xlsx"
+FILE_RESULTS = "data/processed/diagnostic_results.xlsx"
+# Spec 002 (RF-61): ruta de un Excel de revisión (o de una tabla de
+# parámetros revisados del supervisor) cuyas decisiones se aplican; None =
+# solo las reglas automáticas. El Excel de revisión nuevo se guarda junto a
+# FILE_RESULTS, con su nombre más "_revision" (RF-60, RF-36); si ya existe,
+# con un número al final, sin reemplazarlo (RF-71).
+FILE_REVIEW = None
+
 
 def main():
     """
     Realiza el proceso completo: lectura -> diagnóstico -> limpieza ->
-    reporte de similitud -> separación por estado -> exportación.
+    estandarización de parámetros y separación de comparecientes -> reporte
+    de similitud -> separación por estado -> exportación del resultado y del
+    Excel de revisión. Desde la spec 002 hace exactamente lo mismo que el
+    botón "Procesar" de la GUI (src/pipeline.py, RF-60). Devuelve las rutas
+    guardadas (resultado, Excel de revisión), o None si no se guardó nada.
     """
-    # CONFIGURATION
-    FILE_EXCEL = "data/original/base_pasantes.xlsx"
-    FILE_RESULTS = "data/processed/diagnostic_results.xlsx"
 
     # ============================================================
     # 1. LECTURA
     # ============================================================
-    
     df = read_excel_file(FILE_EXCEL)
     excel_general_information(df)
     if df is None:
-        return
-
+        return None
 
     # ============================================================
     # 2. DIAGNÓSTICO INICIAL
     # ============================================================
     run_diagnostics(df)
 
+    # ============================================================
+    # 3. REVISIÓN A APLICAR (opcional, RF-61)
+    # ============================================================
+    review = None
+    if FILE_REVIEW:
+        try:
+            review = read_review(FILE_REVIEW)
+        except ReviewFileError as error:
+            print(f"\nNo se procesó: {error}")
+            return None
+        print(f"\nAplicando la revisión de: {FILE_REVIEW}")
 
     # ============================================================
-    # 3. ESTANDARIZACIÓN Y LIMPIEZA 
+    # 4. LIMPIEZA, ESTANDARIZACIÓN, DUPLICADOS Y SEPARACIÓN
     # ============================================================
-    df = clean_and_standardize(df)
-    
+    try:
+        result = run_pipeline(
+            df,
+            table=review.table if review is not None else None,
+            decisions=review.decisions if review is not None else None,
+            on_stage=lambda etapa: print(f"\n=== {etapa} ==="),
+        )
+    except TotalsMismatchError as error:
+        print(f"\n{error}")
+        return None
 
     # ============================================================
-    # 4. ANÁLISIS AVANZADO (Reporte)
+    # 5. EXPORTACIÓN (resultado + Excel de revisión, juntos o ninguno)
     # ============================================================
-    run_similarity_report(df)
+    print("\nEXPORTANDO RESULTADOS A EXCEL (resultado y Excel de revisión)...\n")
+    Path(FILE_RESULTS).parent.mkdir(parents=True, exist_ok=True)
+    result_path, review_path = save(result, FILE_RESULTS, style_reference_path=FILE_EXCEL)
 
-    # ============================================================
-    # 5. FILTRADO Y SEPARACIÓN DE DATOS 
-    # ============================================================
-    grupos = split_by_status(df)
-    df_multi_ius = extract_multi_ius(df)
-    
-    # 5.1. Radicado IUS Revisada (solo en Reparto_Activo)
-    print("\nGENERANDO 'Radicado IUS Revisada' en Reparto_Activo...\n")
-    grupos["activos"] = add_radicado_ius_revisada(grupos["activos"])
-    grupos["archivados"] = add_radicado_ius_revisada(grupos["archivados"])
-    grupos["retirados"] = add_radicado_ius_revisada(grupos["retirados"])
-    grupos["sim"] = add_radicado_ius_revisada(grupos["sim"])
-    df_multi_ius = add_radicado_ius_revisada(df_multi_ius)
+    print(f"Resultado: {result_path}")
+    print(f"Excel de revisión: {review_path}")
+    for hoja, cantidad in result.counts.items():
+        print(f" - {hoja}: {cantidad:,} registros")
+    print(f"Pendientes de revisión: {result.pending_values:,} valores en {result.pending_rows:,} filas "
+          "(pintados en el resultado y listados en el Excel de revisión).")
+    return result_path, review_path
 
-    # ============================================================
-    # 6. EXPORTACIÓN 
-    # ============================================================
-    print("\nEXPORTANDO RESULTADOS A EXCEL (varias hojas)...\n")
-    
-    hojas_exportar = {
-        "Reparto_Activo": grupos["activos"],
-        "Archivados": grupos["archivados"],
-        "Funcionarios_Retirados": grupos["retirados"],
-        "SIM": grupos["sim"],
-        "Multiples_IUS": df_multi_ius
-    }
-    
-    export_multi_sheet_excel(
-        sheets=hojas_exportar, 
-        file_path=FILE_RESULTS,
-        style_reference_path=FILE_EXCEL,
-        style_reference_sheet="Reparto"
-    )
 
 if __name__ == "__main__":
     main()

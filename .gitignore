@@ -34,3 +34,9 @@ logs/
 /AGENTS.md
 /CLAUDE.md
 /.claude/
+
+# Herramientas locales (reportes con datos de la base, no son el producto)
+/herramientas_locales/
+
+# Datos de la base y salidas: traen nombres y cédulas de comparecientes (principio 6)
+/data/

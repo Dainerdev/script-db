@@ -1,2 +1,6 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
+addopts = "-m 'not datos_reales'"
+markers = [
+    "datos_reales: usa el Excel real de data/original (no versionado); se corre solo con -m datos_reales",
+]

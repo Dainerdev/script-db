@@ -9,6 +9,7 @@ pytest==9.1.1
 python-calamine==0.8.2
 python-dateutil==2.9.0.post0
 pyxlsb==1.0.10
+rapidfuzz==3.14.6
 six==1.17.0
 tzdata==2026.3
 xlrd==2.0.2

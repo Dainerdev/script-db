@@ -3,6 +3,7 @@ import pandas as pd
 import re
 from datetime import date
 
+from src.text_keys import LINE_SEPARATED_COLUMNS
 
 # =================================================================
 # Funciones de estandarización y limpieza de columnas
@@ -41,7 +42,7 @@ def standardize_column_dates(serie):
     return dates.dt.date
 
 
-def standardize_column_spacing(serie):
+def standardize_column_spacing(serie, keep_line_breaks=False):
     """
     "Aplicar funcion de espaciado en todas las columnas"
 
@@ -50,82 +51,22 @@ def standardize_column_spacing(serie):
     standardize_column_names, esta si es segura para aplicar a TODAS las
     columnas de texto -incluidas las de texto libre como OBSERVACIONES o
     DATOS RESOLUCION- donde forzar mayusculas no tiene sentido.
+
+    Con keep_line_breaks=True (NOMBRES_APELLIDOS e IDENTIFICACIÓN, spec 002,
+    Decisión #9) los saltos de línea se conservan, porque la separación de
+    comparecientes cuenta las líneas: cada línea se recorta y se colapsa por
+    dentro, "\\r\\n" pasa a "\\n" y se quitan las líneas vacías.
     """
     serie = serie.astype(str)
+    if keep_line_breaks:
+        serie = serie.str.replace(r"\r\n?", "\n", regex=True)
+        serie = serie.str.replace(r"[^\S\n]+", " ", regex=True)
+        serie = serie.str.replace(r" ?\n[\n ]*", "\n", regex=True)
+        return serie.str.strip()
     serie = serie.str.strip()
     serie = serie.str.replace(r"\s+", " ", regex=True)
     return serie
 
-def _normalizar_saltos_multiples(serie):
-    """
-    Colapsa saltos de línea múltiples (con o sin espacios/tabs entre ellos)
-    a un solo salto de línea, y quita saltos sueltos al inicio/final de la
-    celda. Sin esto, una celda como "nombre1\n\nnombre2" se parte en 3
-    segmentos ("nombre1", "", "nombre2") en vez de 2 -el segmento vacío
-    genera una fila fantasma (mismo No, mismo RADICADO IUS, nombre e
-    identificación en blanco) al desdoblar.
-    """
-    s = serie.astype(str).str.strip()
-    s = s.str.replace(r"[ \t]*\n[ \t\n]*", "\n", regex=True)
-    return s
-
-def split_multiple_comparecientes(df, name_col="NOMBRES_APELLIDOS", id_col="IDENTIFICACIÓN"):
-    """
-    "Aplicar un salto de linea a los nombres y comparar las longitudes para
-    separar los grupos de nombres"
-
-    Desdobla en varias filas las que empaquetan mas de un compareciente en
-    una sola celda (nombre e identificacion separados por saltos de linea EN
-    PARALELO). Solo desdobla cuando el numero de segmentos coincide
-    EXACTAMENTE entre nombre e identificacion para esa fila (linea 1 de
-    nombre <-> linea 1 de cedula, etc). Si no coincide, la fila se deja
-    intacta y se marca en la columna nueva '_revisar_multiples' = True para
-    revision manual, en vez de adivinar el emparejamiento.
-
-    Nota: pensada para correr ANTES de standardize_column_names /
-    standardize_column_spacing sobre estas dos columnas (splitea sobre el
-    texto crudo, incluido el \\n).
-
-    Si falta name_col o id_col, retorna df sin modificar (mismo patrón de
-    guarda que extract_multi_ius en diagnostic.py) — permite que la GUI
-    siga adelante con el resto del pipeline sin esas dos columnas.
-    """
-    df = df.copy()
-    if name_col not in df.columns or id_col not in df.columns:
-        return df
-
-    nombres_raw = _normalizar_saltos_multiples(df[name_col])
-    ids_raw = _normalizar_saltos_multiples(df[id_col])
-
-    nom_split = nombres_raw.str.split("\n")
-    id_split = ids_raw.str.split("\n")
-
-    n_nom = nom_split.str.len()
-    n_id = id_split.str.len()
-    tiene_multiples = (n_nom > 1) | (n_id > 1)
-    segmentos_coinciden = n_nom == n_id
-
-    df["_revisar_multiples"] = tiene_multiples & ~segmentos_coinciden
-
-    idx_a_desdoblar = df.index[tiene_multiples & segmentos_coinciden]
-    idx_simples = df.index[~(tiene_multiples & segmentos_coinciden)]
-
-    filas_nuevas = []
-    for idx in idx_a_desdoblar:
-        row = df.loc[idx]
-        nombres = [n.strip() for n in nombres_raw.loc[idx].split("\n")]
-        ids = [i.strip() for i in ids_raw.loc[idx].split("\n")]
-        for nombre, ident in zip(nombres, ids):
-            nueva = row.copy()
-            nueva[name_col] = nombre
-            nueva[id_col] = ident
-            filas_nuevas.append(nueva)
-
-    df_simples = df.loc[idx_simples]
-    df_desdobladas = pd.DataFrame(filas_nuevas, columns=df.columns) if filas_nuevas else pd.DataFrame(columns=df.columns)
-
-    resultado = pd.concat([df_simples, df_desdobladas], ignore_index=True)
-    return resultado
 
 
 def standardize_reparto_column(serie, min_year=2017, max_year=None):
@@ -198,30 +139,25 @@ def standardize_reparto_column(serie, min_year=2017, max_year=None):
 
 def clean_and_standardize(df):
     """
-    Etapa 3 del pipeline: desdoblado de comparecientes, espaciado en todas
-    las columnas de texto, formato de nombres propios, y estandarización
-    de fechas (FECHA y REPARTO). Retorna el df limpio.
+    Etapa de limpieza del pipeline: espaciado en todas las columnas de texto
+    y estandarización de fechas (FECHA y REPARTO). Retorna el df limpio.
+
+    Desde la spec 002 ya no separa comparecientes ni da formato a los
+    nombres propios: las dos cosas pasan a "Estandarizando parámetros..."
+    (src/pipeline.py, Decisiones #9 y #10; el formato viejo convertía la Ñ
+    en N). En NOMBRES_APELLIDOS e IDENTIFICACIÓN el espaciado conserva los
+    saltos de línea, y las columnas _ORIGINAL (RF-87) no se tocan.
     """
     print("\nPROCESANDO ESTANDARIZACIÓN Y LIMPIEZA...\n")
 
-    print(" -> Desdoblando comparecientes múltiples por fila...")
-    df = split_multiple_comparecientes(df, name_col="NOMBRES_APELLIDOS")
-    if "_revisar_multiples" in df.columns:
-        df = df.drop(columns=["_revisar_multiples"])
-
     print(" -> Estandarizando espaciado en todas las columnas...")
+    df = df.copy()
     for col in df.columns:
         serie = df[col]
+        if str(col).endswith("_ORIGINAL"):
+            continue
         if pd.api.types.is_string_dtype(serie) or serie.dtype == "object":
-            df[col] = standardize_column_spacing(df[col])
-
-    # OPTIMIZACIÓN: ya no se llama a standardize_column_names (que vuelve a
-    # espaciar por dentro); el espaciado ya se aplicó arriba a todas las
-    # columnas de texto, incluidas estas 3. Solo falta mayúsculas + tildes.
-    print(" -> Aplicando formato a Nombres, Magistrados y Funcionario a cargo...")
-    for col in ("NOMBRES_APELLIDOS", "MAGISTRADO", "FUNCIONARIO A CARGO"):
-        if col in df.columns:
-            df[col] = df[col].str.upper().map(remove_accents)
+            df[col] = standardize_column_spacing(serie, keep_line_breaks=col in LINE_SEPARATED_COLUMNS)
 
     print(" -> Estandarizando formato de Fechas y Reparto...")
     if "FECHA" in df.columns:

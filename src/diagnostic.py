@@ -149,9 +149,10 @@ def check_duplicate_names_by_id(df, id_col="IDENTIFICACIÓN", name_col="NOMBRES_
     Agrupa por cedula (IDENTIFICACION) -ya que es un dato mas estable que el
     nombre- y detecta cedulas que aparecen escritas con mas de una variante
     de nombre. Pensada para correr DESPUES de standarize_column_spacing /
-    standarize_column_names y despues de split_multiple_comparecientes,
-    porque antes de eso una misma celda puede traer varios comparecientes
-    empaquetados y el agrupamiento no tiene sentido.
+    standarize_column_names y despues de separar comparecientes
+    (comparecientes.separate desde la spec 002), porque antes de eso una
+    misma celda puede traer varios comparecientes empaquetados y el
+    agrupamiento no tiene sentido.
     """
     temp = df[[id_col, name_col]].dropna().copy()
     temp[id_col] = temp[id_col].astype(str).str.strip()

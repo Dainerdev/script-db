@@ -5,14 +5,19 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from src.exportation import export_multi_sheet_excel, ExportCancelled
+from src import pipeline
+from src.exportation import ExportCancelled
 
 from gui import controller
 from gui.error_log import handle_unexpected_error
+from gui.standardization_summary import format_standardization, pending_phrase
 from gui.validation import describe_missing
 
 WINDOW_TITLE = "Limpieza de base de datos - Procuraduría/JEP"
 POLL_INTERVAL_MS = 100
+# Tramo final de la barra al guardar, para el Excel de revisión (spec 002):
+# es chico al lado del resultado (2,7 MB contra 46,6 MB en el corte real).
+REVIEW_PROGRESS_START = 0.95
 
 
 class App:
@@ -28,9 +33,10 @@ class App:
         self.root.title(WINDOW_TITLE)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         # Ventana fija demasiado chica recortaba el resumen final (varias
-        # líneas: ruta + 5 hojas) — ver captura de la Dra. Mauren.
-        self.root.geometry("820x480")
-        self.root.minsize(760, 440)
+        # líneas: ruta + 5 hojas) — ver captura de la Dra. Mauren. Desde la
+        # spec 002 suma el resumen de la estandarización (con scroll).
+        self.root.geometry("900x680")
+        self.root.minsize(760, 560)
 
         self.queue: queue.Queue = queue.Queue()
         self.selected_path: str | None = None
@@ -40,7 +46,11 @@ class App:
         self.busy = False
         self.saved = True  # False si hay un ProcessResult sin guardar (RF-13)
         self.cancel_requested = False
+        self._pending_warned = False  # el aviso de pendientes sale una vez por resultado (RF-50)
+        self._review_path = None      # archivo elegido en "Cargar revisión", mientras se lee
+        self._applied_review = None   # el que se está aplicando: se nombra en el resumen
         self._crawl_active = False
+        self._crawl_after_id = None
         self._crawl_value = 0.0
         self._crawl_target = 0.0
 
@@ -78,12 +88,18 @@ class App:
         self.process_button = ttk.Button(botones_frame, text="Procesar", command=self._on_process_click, state="disabled")
         self.process_button.grid(row=0, column=0)
 
+        # Spec 002 (RF-44): reprocesa el archivo con las decisiones de un Excel
+        # de revisión o con una tabla de parámetros revisados.
+        self.review_button = ttk.Button(botones_frame, text="Cargar revisión...", command=self._on_load_review_click,
+                                        state="disabled")
+        self.review_button.grid(row=0, column=1, padx=(8, 0))
+
         self.save_button = ttk.Button(botones_frame, text="Guardar resultado...", command=self._on_save_click)
-        self.save_button.grid(row=0, column=1, padx=(8, 0))
+        self.save_button.grid(row=0, column=2, padx=(8, 0))
         self.save_button.grid_remove()
 
         self.cancel_button = ttk.Button(botones_frame, text="Cancelar", command=self._on_cancel_click)
-        self.cancel_button.grid(row=0, column=2, padx=(8, 0))
+        self.cancel_button.grid(row=0, column=3, padx=(8, 0))
         self.cancel_button.grid_remove()
 
         self.stage_label = ttk.Label(frame, text="", wraplength=WRAP)
@@ -94,6 +110,20 @@ class App:
 
         self.summary_label = ttk.Label(frame, justify="left", text="", wraplength=WRAP)
         self.summary_label.grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        # Spec 002 (RF-43): resumen de la estandarización, de solo lectura y
+        # con scroll, para que entre completo aunque la ventana sea chica.
+        resumen_frame = ttk.Frame(frame)
+        resumen_frame.grid(row=6, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        resumen_frame.columnconfigure(0, weight=1)
+        resumen_frame.rowconfigure(0, weight=1)
+        frame.rowconfigure(6, weight=1)
+        self.standardization_text = tk.Text(resumen_frame, height=12, wrap="word", state="disabled",
+                                            relief="flat", borderwidth=0, font="TkDefaultFont")
+        scroll = ttk.Scrollbar(resumen_frame, orient="vertical", command=self.standardization_text.yview)
+        self.standardization_text.configure(yscrollcommand=scroll.set)
+        self.standardization_text.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
 
     def _set_window_icon(self):
         # Si assets/icon.ico no existe todavía, la ventana se ve con el
@@ -138,8 +168,16 @@ class App:
         self.saved = True
         self.diagnostic_label.config(text="")
         self.summary_label.config(text="")
+        self._show_standardization("")
         self.process_button.config(state="disabled")
+        self.review_button.config(state="disabled")
         self.save_button.grid_remove()
+
+    def _show_standardization(self, text: str):
+        self.standardization_text.config(state="normal")
+        self.standardization_text.delete("1.0", "end")
+        self.standardization_text.insert("1.0", text)
+        self.standardization_text.config(state="disabled")
 
     def _handle_diagnostic(self, validation, diagnostic, df):
         self.diagnostic_label.config(text=self._format_diagnostic(diagnostic))
@@ -162,6 +200,7 @@ class App:
         self.df = df
         self.source_path = self.selected_path
         self.process_button.config(state="normal")
+        self.review_button.config(state="normal")   # spec 002, RF-49
 
     @staticmethod
     def _format_diagnostic(diagnostic) -> str:
@@ -179,6 +218,7 @@ class App:
     # ------------------------------------------------------------------
 
     def _on_process_click(self):
+        self._applied_review = None   # "Procesar" no usa revisión; "Cargar revisión" sí
         self._set_busy(True, cancellable=True)
         self._start_thread(
             controller.process, self.df, self.source_path, self.queue.put,
@@ -188,7 +228,47 @@ class App:
     def _handle_process_done(self, process_result):
         self.process_result = process_result
         self.saved = False
+        self._pending_warned = False
+        texto = format_standardization(process_result)                       # spec 002, RF-43
+        if self._applied_review:
+            texto = f"Revisión aplicada: {Path(self._applied_review).name}\n\n{texto}"
+        self._show_standardization(texto)
         self._prompt_save()
+
+    # ------------------------------------------------------------------
+    # Spec 002, RF-44/RF-47/RF-49/RF-59/RF-79: "Cargar revisión"
+    # ------------------------------------------------------------------
+
+    def _on_load_review_click(self):
+        if self.process_result is not None and not self.saved:                # RF-59
+            if not messagebox.askyesno(
+                "Resultado sin guardar",
+                "Tienes un resultado procesado que no has guardado. Al cargar una revisión se vuelve a "
+                "procesar el archivo y ese resultado se descarta. ¿Deseas continuar?",
+            ):
+                return
+        path = filedialog.askopenfilename(
+            title="Cargar Excel de revisión o tabla de parámetros revisados",
+            filetypes=[("Archivos de Excel", "*.xlsx")],
+        )
+        if not path:
+            return
+        self._review_path = path
+        self._set_busy(True)
+        self._start_thread(controller.read_review, path, self.queue.put)
+
+    def _handle_review_loaded(self, review):
+        # RF-44: rehace el procesamiento del archivo ya leído, con la revisión.
+        self._applied_review = self._review_path
+        self._set_busy(True, cancellable=True)
+        self._start_thread(self._process_with_review, review)
+
+    def _process_with_review(self, review):
+        controller.process(self.df, self.source_path, self.queue.put, lambda: self.cancel_requested, review=review)
+
+    def _handle_review_error(self, mensaje):
+        # RF-47: error claro; el archivo de entrada y el resultado anterior no cambian.
+        messagebox.showerror("No se pudo cargar la revisión", mensaje)
 
     # ------------------------------------------------------------------
     # RF-8/RF-9/RF-10/RF-11: guardado y resumen final
@@ -197,7 +277,25 @@ class App:
     def _on_save_click(self):
         self._prompt_save()
 
+    def _warn_pending(self):
+        """
+        Spec 002, RF-50: si quedan valores pendientes, avisa cuántos y en
+        cuántas filas, una sola vez por resultado, y el guardado sigue igual
+        (no bloquea: el funcionario puede decidirlos después).
+        """
+        result = self.process_result
+        if self._pending_warned or result is None or not result.pending_values:
+            return
+        self._pending_warned = True
+        messagebox.showwarning(
+            "Quedan valores pendientes",
+            pending_phrase(result.pending_values, result.pending_rows) + "\n\n"
+            "Puedes guardar igual: en el resultado quedan pintados y en el Excel de revisión, listados para "
+            "que los decidas. Después, «Cargar revisión» aplica tus decisiones.",
+        )
+
     def _prompt_save(self):
+        self._warn_pending()
         sugerido = self._suggested_output_name(self.source_path)
         output_path = filedialog.asksaveasfilename(
             title="Guardar resultado como",
@@ -234,7 +332,13 @@ class App:
     def _run_export(self, process_result, output_path):
         # Método (no función libre): ya tiene self.queue, no necesita
         # recibir on_event como los de gui/controller.py.
+        # Spec 002: el resultado y el Excel de revisión se guardan juntos o
+        # ninguno (save_pair escribe temporales y los reemplaza al final,
+        # RF-36, RF-80); un resultado sin estandarización guarda solo el
+        # resultado, también por temporal (RF-15).
+        review = process_result.review
         total_filas = sum(process_result.counts.values()) or 1
+        tramo = REVIEW_PROGRESS_START if review is not None else 1.0
         filas_hechas = 0
 
         def on_sheet_start(sheet_name, indice, total):
@@ -243,42 +347,68 @@ class App:
             # ve congelada mientras escribe Reparto_Activo (la más grande).
             # "progress_crawl" hace que la GUI la anime sola hacia el
             # siguiente punto real mientras espera (Decisión #12 del plan).
-            objetivo = (filas_hechas + process_result.counts.get(sheet_name, 0)) / total_filas
+            objetivo = (filas_hechas + process_result.counts.get(sheet_name, 0)) / total_filas * tramo
             self.queue.put(("stage", f"Exportando resultados... ({indice}/{total}: {sheet_name})"))
-            self.queue.put(("progress_crawl", filas_hechas / total_filas, objetivo))
+            self.queue.put(("progress_crawl", filas_hechas / total_filas * tramo, objetivo))
 
         def on_sheet_done(sheet_name, indice, total):
             nonlocal filas_hechas
             filas_hechas += process_result.counts.get(sheet_name, 0)
-            self.queue.put(("progress", filas_hechas / total_filas))
+            self.queue.put(("progress", filas_hechas / total_filas * tramo))
+
+        def before_review():
+            self.queue.put(("stage", "Guardando el Excel de revisión..."))
+            self.queue.put(("progress_crawl", tramo, 1.0))
 
         try:
             self.queue.put(("stage", "Exportando resultados..."))
             self.queue.put(("progress", 0.0))
-            export_multi_sheet_excel(
-                sheets=process_result.sheets,
-                file_path=output_path,
+            # T19: el mismo guardado que main.py (pinta pendientes, RF-40; nombre
+            # de la revisión en su Resumen, RF-71).
+            result_path, review_path = pipeline.save(
+                process_result, output_path,
                 style_reference_path=process_result.source_path,
-                style_reference_sheet="Reparto",
-                raise_errors=True,
                 on_sheet_start=on_sheet_start,
                 on_sheet_done=on_sheet_done,
                 should_cancel=lambda: self.cancel_requested,
+                before_review=before_review,
             )
-            self.queue.put(("export_done", output_path))
+            self.queue.put(("progress", 1.0))
+            self.queue.put(("export_done", str(result_path), str(review_path) if review_path else None))
         except ExportCancelled:
-            Path(output_path).unlink(missing_ok=True)  # no dejar un .xlsx a medio escribir
             self.queue.put(("cancelled",))
+        except PermissionError as exc:
+            # Lo más común: el resultado o un Excel de revisión anterior está
+            # abierto en Excel al reemplazarlo. save_pair ya deshizo todo (RF-80).
+            _, log_path = handle_unexpected_error(exc)
+            self.queue.put(("export_error", "No se pudo guardar: el archivo de resultado o el Excel de revisión "
+                            "parece estar abierto en otro programa. Ciérralo e intenta de nuevo con "
+                            "«Guardar resultado...».", log_path))
         except Exception as exc:
             mensaje, log_path = handle_unexpected_error(exc)
             self.queue.put(("export_error", mensaje, log_path))
 
-    def _handle_export_done(self, output_path):
+    def _handle_export_done(self, output_path, review_path=None):
         self.saved = True
         counts = self.process_result.counts
-        resumen = "\n".join(f"- {hoja}: {cantidad:,} registros" for hoja, cantidad in counts.items())
-        self.summary_label.config(text=f"Guardado en: {output_path}\n{resumen}")
-        messagebox.showinfo("Proceso terminado", f"Archivo guardado en:\n{output_path}")
+        # Compacto (T18): ruta completa del resultado (RF-11), solo el nombre del
+        # Excel de revisión (va en la misma carpeta) y las hojas en una línea,
+        # para dejarle lugar al resumen de la estandarización.
+        lineas = [f"Guardado en: {output_path}"]
+        mensaje = f"Archivo guardado en:\n{output_path}"
+        if review_path:                                                                   # spec 002, RF-36
+            nombre = Path(review_path).name
+            linea = f"Excel de revisión (en la misma carpeta): {nombre}"
+            mensaje += f"\n\nExcel de revisión:\n{review_path}"
+            if nombre != f"{Path(output_path).stem}_revision.xlsx":                       # RF-71
+                aviso = ("Ya había un Excel de revisión con ese nombre; no se reemplazó: el nuevo se guardó "
+                         "con un número al final.")
+                linea += f". {aviso}"
+                mensaje += f"\n\n{aviso}"
+            lineas.append(linea)
+        lineas.append("Registros por hoja: " + " · ".join(f"{hoja} {cantidad:,}" for hoja, cantidad in counts.items()))
+        self.summary_label.config(text="\n".join(lineas))
+        messagebox.showinfo("Proceso terminado", mensaje)
         self.save_button.grid()
 
     # ------------------------------------------------------------------
@@ -318,6 +448,10 @@ class App:
         # note parejo de principio a fin, en vez de volverse imperceptible
         # cerca del tope como pasaba con la versión anterior (decaimiento
         # proporcional — daba la sensación de quedarse quieta otra vez).
+        # Una sola cadena de after() a la vez: desde la spec 002 llegan varios
+        # progress_crawl seguidos (uno por etapa) y cada cadena viva sumaba
+        # pasos (la barra corría más rápido y se quedaba quieta).
+        self._cancel_crawl_tick()
         self._crawl_value = start
         self._crawl_target = start + (target - start) * self.CRAWL_CAP_FRACTION
         self._crawl_step = (self._crawl_target - start) / self.CRAWL_STEPS_TO_CAP
@@ -325,14 +459,21 @@ class App:
         self._tick_crawl()
 
     def _tick_crawl(self):
+        self._crawl_after_id = None
         if not self._crawl_active:
             return
         if self._crawl_value < self._crawl_target:
             self._crawl_value = min(self._crawl_value + self._crawl_step, self._crawl_target)
             self.progress_bar["value"] = self._crawl_value
-        self.root.after(self.CRAWL_TICK_MS, self._tick_crawl)
+        self._crawl_after_id = self.root.after(self.CRAWL_TICK_MS, self._tick_crawl)
+
+    def _cancel_crawl_tick(self):
+        if self._crawl_after_id is not None:
+            self.root.after_cancel(self._crawl_after_id)
+            self._crawl_after_id = None
 
     def _stop_progress_crawl(self, final_value: float):
+        self._cancel_crawl_tick()
         self._crawl_active = False
         self.progress_bar["value"] = final_value
 
@@ -355,6 +496,7 @@ class App:
         state = "disabled" if busy else "normal"
         self.select_button.config(state=state)
         self.process_button.config(state="disabled" if busy or self.df is None else "normal")
+        self.review_button.config(state="disabled" if busy or self.df is None else "normal")   # RF-49, RF-79
         if busy and cancellable:
             self.cancel_requested = False
             self.cancel_button.grid()
@@ -362,6 +504,7 @@ class App:
         else:
             self.cancel_button.grid_remove()
         if not busy:
+            self._cancel_crawl_tick()
             self._crawl_active = False  # nunca dejar el ticker corriendo de más
             self.stage_label.config(text="")
 
@@ -391,15 +534,22 @@ class App:
         elif tag == "done":
             self._set_busy(False)
             self._handle_process_done(event[1])
+        elif tag == "review_loaded":
+            self._handle_review_loaded(event[1])
+        elif tag == "review_error":
+            self._set_busy(False)
+            self._handle_review_error(event[1])
         elif tag == "error":
             self._set_busy(False)
             self._handle_error(event[1], event[2])
         elif tag == "export_done":
             self._set_busy(False)
-            self._handle_export_done(event[1])
+            self._handle_export_done(*event[1:])
         elif tag == "export_error":
             self._set_busy(False)
             self._handle_error(event[1], event[2])
+            if self.process_result is not None:
+                self.save_button.grid()  # reintentar guardar sin reprocesar (como RF-10)
         elif tag == "cancelled":
             self._set_busy(False)
             self._handle_cancelled()
