@@ -12,6 +12,18 @@ def test_app_constructs_without_error(root):
     assert str(app.select_button["state"]) == "normal"
 
 
+def test_window_height_fits_a_short_screen(root, monkeypatch):
+    # T21: con el .exe en una pantalla más baja, la ventana de 680 quedaba
+    # detrás de la barra de tareas.
+    monkeypatch.setattr(root, "winfo_screenheight", lambda: 600)
+
+    App(root)
+    root.update_idletasks()
+
+    alto = int(root.geometry().split("x")[1].split("+")[0])
+    assert alto <= 600 - 80
+
+
 def test_initial_state_is_idle(root):
     app = App(root)
     assert app.df is None

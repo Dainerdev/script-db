@@ -34,9 +34,12 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         # Ventana fija demasiado chica recortaba el resumen final (varias
         # líneas: ruta + 5 hojas) — ver captura de la Dra. Mauren. Desde la
-        # spec 002 suma el resumen de la estandarización (con scroll).
-        self.root.geometry("900x680")
-        self.root.minsize(760, 560)
+        # spec 002 suma el resumen de la estandarización (con scroll). La
+        # altura se ajusta a la pantalla (T21: en una más baja, la ventana
+        # quedaba detrás de la barra de tareas); el resumen tiene scroll.
+        alto = min(680, self.root.winfo_screenheight() - 80)
+        self.root.geometry(f"900x{alto}")
+        self.root.minsize(760, min(560, alto))
 
         self.queue: queue.Queue = queue.Queue()
         self.selected_path: str | None = None
