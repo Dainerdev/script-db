@@ -370,3 +370,125 @@ def test_lineas_sin_columna_de_nombres_no_cambia_nada():
     assert len(resultado.df) == 1
     assert resultado.df.loc[0, "PERSONAS EN EL REGISTRO"] == 1
     assert resultado.traces == []
+
+
+# ---------------------------------------------------------------------
+# Cambio 11: filas de compareciente que no son personas
+# ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("linea", [
+    "Caso 005 Norte Del Cauca", "Caso No. 01 Toma De Rehenes", "Caso001 Uraba", "CASO 04 Subcaso Uraba",
+])
+def test_cambio11_linea_que_empieza_con_un_caso_es_referencia_de_caso(linea):
+    assert c.classify_line(linea) == c.CASE_REFERENCE
+
+
+@pytest.mark.parametrize("linea", [
+    "Medidas Cautelares", "Cementerio Central De Pueblo Viejo", "Retencion Ilegal De Personas Por Parte De Grupos",
+    "Crímenes Cometidos Por Miembros", "Violencia Sexual Basada En Genero", "Fiscalía General De La Nación",
+    "Fundacion Para La Memoria", "Comparecientes", "Abogada Victimas", "Dr. Carlos Vega Soto",
+    '"Medidas Cautelares',
+])
+def test_cambio11_lista_de_asunto_ampliada(linea):
+    assert c.classify_line(linea) == c.SUBJECT
+
+
+@pytest.mark.parametrize("linea", [
+    "Ana Ruiz Diaz Victima", "Juan Sala Ruiz", "Maria Magdalena Ruiz", "Luis Niño Paz", "Pedro Corte Gil",
+    "Caso Ruiz Ana",
+    # Revisión con MiniMax: un rol cuenta solo como primera palabra (puede ser apellido).
+    "Juan Carlos Defensor", "Ana Ruiz Abogada",
+])
+def test_cambio11_lista_ampliada_no_toma_nombres_reales_como_asunto(linea):
+    assert c.classify_line(linea) == c.PERSON
+
+
+@pytest.mark.parametrize("linea", ["Caro 12 De Marzo", "Casa No 12 Ruiz", "Casino 12 De Oro"])
+def test_cambio11_solo_caso_exacto_abre_una_referencia_de_caso_con_texto(linea):
+    # Revisión con MiniMax: la tolerancia de una letra tomaba CARO o CASA como "Caso".
+    assert c.classify_line(linea) != c.CASE_REFERENCE
+
+
+@pytest.mark.parametrize("anotacion", ["(Carlos Vega Soto)", '"(Carlos Vega Soto', "( Carlos Vega Soto Alias El Mono )",
+                                       "«(Carlos Vega Soto)»"])
+def test_cambio11_anotacion_entre_parentesis_no_crea_fila(anotacion):
+    texto = f"Luis Mora Rios\n{anotacion}"
+    resultado = c.separate(_df((texto, "11111111")))
+
+    filas = _filas(resultado)
+    assert [f[NAMES] for f in filas] == ["Luis Mora Rios"]
+    assert filas[0]["SEPARACIÓN"] == ""
+    assert filas[0]["PERSONAS EN EL REGISTRO"] == 1
+    assert resultado.marks[(0, 1)] == {c.LINES_REMOVED}
+    assert c.Trace(0, texto, "Luis Mora Rios", "línea que no es de persona") in resultado.traces
+
+
+def test_cambio11_anotacion_es_persona_si_las_cedulas_alcanzan():
+    resultado = c.separate(_df(("Luis Mora Rios\n(Carlos Vega Soto)", GRUPO)))
+
+    filas = _filas(resultado)
+    assert [f[NAMES] for f in filas] == ["Luis Mora Rios", "(Carlos Vega Soto)"]
+    assert {f["SEPARACIÓN"] for f in filas} == {"SEPARADA"}
+    assert resultado.marks == {}
+
+
+def test_cambio11_linea_entre_parentesis_sola_sigue_siendo_persona():
+    resultado = c.separate(_df(("(Carlos Vega Soto)", "11111111")))
+
+    assert [f[NAMES] for f in _filas(resultado)] == ["(Carlos Vega Soto)"]
+    assert resultado.marks == {} and resultado.traces == []
+
+
+def test_cambio11_rf68_marca_las_filas_de_una_celda_con_lineas_quitadas():
+    resultado = c.separate(_df(("Ana Ruiz Diaz\nLuis Mora Paz\nMedidas Cautelares", GRUPO)))
+
+    filas = _filas(resultado)
+    assert [f[NAMES] for f in filas] == ["Ana Ruiz Diaz", "Luis Mora Paz"]
+    assert resultado.marks[(0, 1)] == resultado.marks[(0, 2)] == {c.LINES_REMOVED}
+
+
+@pytest.mark.parametrize("texto, sugerencia", [
+    ("Juan\nPerez Gomez", "JUAN PEREZ GOMEZ"),
+    ("Ana Ruiz Diaz\nLuis Mora\nPaz", "ANA RUIZ DIAZ | LUIS MORA PAZ"),
+    ("Juan Perez\nGomez", "JUAN PEREZ GOMEZ"),
+])
+def test_cambio11_rf99_linea_de_una_palabra_queda_pendiente_con_sugerencia_de_unirla(texto, sugerencia):
+    resultado = c.separate(_df((texto, "11111111")))
+
+    filas = _filas(resultado)
+    assert len(filas) == 1
+    assert filas[0][NAMES] == texto
+    assert filas[0]["SEPARACIÓN"] == "SIN SEPARAR"
+    assert resultado.marks[(0, 1)] == {c.PENDING}
+    assert resultado.pending[0] == sugerencia
+
+
+def test_cambio11_rf99_aceptar_une_las_lineas():
+    from src.parameters import Decisions
+    texto = "Juan\nPerez Gomez"
+    decisiones = Decisions(table=[(NAMES, texto, "ACEPTAR")], catalog=[])
+
+    resultado = c.separate(_df((texto, "11111111")), decisions=decisiones)
+
+    filas = _filas(resultado)
+    assert [f[NAMES] for f in filas] == ["JUAN PEREZ GOMEZ"]
+    assert resultado.pending == {}
+
+
+@pytest.mark.parametrize("texto", ["Juan Perez y Ana Ruiz", "Juan Perez; Ana Ruiz"])
+def test_cambio11_rf100_dos_nombres_unidos_por_y_quedan_pendientes(texto):
+    # 4 palabras y una cédula: antes del cambio 11 no era celda con varios nombres.
+    resultado = c.separate(_df((texto, "11111111")))
+
+    filas = _filas(resultado)
+    assert len(filas) == 1 and filas[0]["SEPARACIÓN"] == "SIN SEPARAR"
+    assert resultado.pending[0] == "JUAN PEREZ | ANA RUIZ"
+
+
+@pytest.mark.parametrize("texto", ["GOMEZ RUIZ, JUAN CARLOS", "Maria Gomez Y Ruiz"])
+def test_cambio11_rf100_coma_de_apellidos_primero_o_partes_sin_forma_de_nombre_no_se_marcan(texto):
+    resultado = c.separate(_df((texto, "11111111")))
+
+    filas = _filas(resultado)
+    assert len(filas) == 1 and filas[0]["SEPARACIÓN"] == ""
+    assert resultado.pending == {}

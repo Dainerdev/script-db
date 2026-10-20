@@ -22,10 +22,35 @@ SUBJECT_WORDS = frozenset({
     "COMUNICACION", "AUTO", "CORRECCION", "EMPLAZAMIENTO", "NOTIFICACION", "PRIORIZA", "ACOPIO",
     "ENTREGA", "LLAMAMIENTO", "RECLUTAMIENTO", "BIENES", "MUERTES", "CONVOCATORIA", "OFICIO",
     "REMISION", "SEGUIMIENTO", "AUDIENCIA", "MESA", "PETICION", "DERECHO",
+    # Cambio 11 (plan, decisión 6): asuntos que el corte real traía en esta
+    # columna. Medidas cautelares y macrocasos (palabras de 40 líneas o más
+    # que casi nunca son nombre ni apellido en el diccionario del archivo):
+    "MEDIDA", "CAUTELAR", "CEMENTERIO", "SUBCASO", "CRIMEN", "CONFLICTO", "COMETIDO", "COMETIDA",
+    "VIOLENCIA", "SEXUAL", "PREJUICIO", "REPRODUCTIVA", "ORIENTACION", "IDENTIDAD", "DISCRIMINACION",
+    "CUADERNO", "MUNICIPIO", "MUNICIPAL", "CONTRAINTELIGENCIA", "LOGISTICA", "ASESINATO", "DESAPARICION",
+    "FORZADA", "FORZADO", "ETNICO", "RESGUARDO", "TERRITORIO", "COMBATE", "COMBATIENTE", "AMNISTIABLE",
+    "VEREDA", "UTILIZACION", "PARAMILITAR", "ACREDITACION", "RESTAURACION", "ECOSISTEMA", "BRIGADA",
+    "INTELIGENCIA", "MAGNICIDIO", "INVESTIGACION", "DESPLAZAMIENTO", "MOVILIZACION", "ORGANIZACION",
+    "ARTILLERIA", "INHUMACION", "VICTIMIZACION", "REHEN", "PRIVACION", "RETENCION", "ILEGAL", "ESCOMBRERA",
+    "MOVICE",
+    # entidades:
+    "FISCALIA", "DEFENSORIA", "PROCURADURIA", "MINISTERIO", "JUZGADO", "TRIBUNAL", "COMISION", "CONSEJO",
+    "CORPORACION", "FUNDACION", "ASOCIACION", "COLECTIVO", "MOVIMIENTO", "COMPARECIENTE", "ALCALDIA",
+    "GOBERNACION", "PERSONERIA", "EJERCITO", "POLICIA", "UNIDAD",
+    # roles (el abogado o apoderado no es compareciente):
+    "ABOGADO", "ABOGADA", "APODERADO", "APODERADA", "DEFENSOR", "DEFENSORA", "DR", "DRA", "DOCTOR", "DOCTORA",
+    # Fuera a propósito: VICTIMA (va pegada a nombres reales), PERSONA y las
+    # que también son nombres o apellidos (SALA, CORTE, MAGDALENA, NIÑO…).
 })
 # Palabras de asunto que también son apellidos: cuentan solo como primera
 # palabra de la línea (cambio 7: MESA era apellido en 436 de 537 líneas).
-SUBJECT_FIRST_WORD_ONLY = frozenset({"MESA"})
+# Cambio 11: los roles también ("(Abogado)", "Dr. …"); en otro lugar de la
+# línea pueden ser un apellido ("Juan Carlos Defensor") o acompañar el
+# nombre de la persona, que no se debe perder.
+SUBJECT_FIRST_WORD_ONLY = frozenset({
+    "MESA", "ABOGADO", "ABOGADA", "APODERADO", "APODERADA", "DEFENSOR", "DEFENSORA", "DR", "DRA", "DOCTOR",
+    "DOCTORA",
+})
 
 # Clases de línea de NOMBRES_APELLIDOS.
 PERSON, SUBJECT, CASE_REFERENCE, EMPTY = "persona", "asunto", "referencia de caso", "vacía"
@@ -36,10 +61,19 @@ SEPARATED, UNCONFIRMED, NOT_SEPARATED = "SEPARADA", "SEPARADA SIN CONFIRMAR", "S
 NOT_A_PERSON = MARK_NOT_A_PERSON
 MORE_UNNAMED = "hay más comparecientes sin nombrar"
 PENDING = MARK_PENDING
+LINES_REMOVED = "se quitaron líneas que no son de persona"     # RF-68 (cambio 11)
 
 MAX_CONTENT_WORDS = 5          # definición "Celda con varios nombres"
 MIN_DICTIONARY_COUNT = 3       # Decisión #16
 _SEPARATORS = re.compile(r"\s+Y\s+|[,;]", re.IGNORECASE)
+# RF-100: solo " Y " y ";" vuelven la línea "celda con varios nombres"; la
+# coma no, porque separa apellidos de nombres ("GÓMEZ RUIZ, JUAN CARLOS").
+_STRONG_SEPARATORS = re.compile(r"\s+Y\s+|;", re.IGNORECASE)
+# Definición "Anotación" (cambio 11): empieza con "(", aunque antes haya comillas.
+_ANNOTATION = re.compile(r"""^["“”'«»\s]*\(""")
+# Definición "Referencia de caso" (cambio 11): la línea empieza con un caso,
+# con o sin "No." antes del número, y puede seguir texto.
+_CASE_START = re.compile(r"([A-Z]+)\s?(?:NO?\s)?([0-9O]*\d[0-9O]*)(?=\s|$)")
 
 _MORE = re.compile(r"\s*\bY\s+(?:OTROS|\d+\s+PERSONAS?\s+M[AÁ]S)\b\s*(?:\(\s*\d+\s*\))?\s*$", re.IGNORECASE)
 _THOUSANDS_DOT = re.compile(r"(?<=\d)\.(?=\d{3}(?!\d))")
@@ -149,6 +183,16 @@ def _is_subject_word(word: str, first: bool = False) -> bool:
     return base is not None and (first or base not in SUBJECT_FIRST_WORD_ONLY)
 
 
+def _starts_with_case(key: str) -> bool:
+    """
+    La clave empieza con "CASO" y un número, aunque siga texto ("CASO 004
+    SUBCASO URABA", cambio 11). Sin la tolerancia de una letra de
+    `is_case_reference`: con texto detrás, CARO o CASA serían un apellido.
+    """
+    start = _CASE_START.match(key)
+    return bool(start) and start[1] == "CASO"
+
+
 def classify_line(line) -> str:
     """
     Clase de una línea de NOMBRES_APELLIDOS (definiciones "Asunto" y "Línea
@@ -159,7 +203,7 @@ def classify_line(line) -> str:
     key = format_key(line, NAMES)
     if not key:
         return EMPTY
-    if is_case_reference(line):
+    if is_case_reference(line) or _starts_with_case(key):
         return CASE_REFERENCE
     words = key.split()
     if any(_is_subject_word(word, first=(i == 0)) for i, word in enumerate(words)):
@@ -194,12 +238,13 @@ def _known_partitions(words: list[str], known: set[str], limit: int = 20) -> lis
     return [partition for partition in from_word(0) if len(partition) >= 2]
 
 
-def _separator_division(line: str) -> tuple[str, ...] | None:
+def _separator_division(line: str, separators=_SEPARATORS) -> tuple[str, ...] | None:
     """
     Partes separadas por " Y ", coma o punto y coma, si cada una es una línea
-    de persona con forma de nombre (RF-69, cambio 8).
+    de persona con forma de nombre (RF-69, cambio 8). Con
+    `_STRONG_SEPARATORS`, sin la coma (RF-100).
     """
-    parts = [part.strip() for part in _SEPARATORS.split(line)]
+    parts = [part.strip() for part in separators.split(line)]
     keys = tuple(format_key(part, NAMES) for part in parts)
     if (len(parts) >= 2 and all(classify_line(part) == PERSON for part in parts)
             and all(_is_name_shape(key.split()) for key in keys)):
@@ -237,29 +282,59 @@ def _strip_more(line: str) -> tuple[str, bool]:
     return line, False
 
 
-def _split_cell(value) -> tuple[list[str] | None, bool, bool, bool]:
+def _split_cell(value, cedulas: int = 0) -> tuple[list[str] | None, bool, bool, bool]:
     """
     Personas de una celda de nombres: (personas o None si la celda no tiene
     texto, si traía "Y OTROS", si se quitaron líneas que no son de persona,
-    si todas sus líneas son asuntos o referencias de caso).
+    si todas sus líneas son asuntos o referencias de caso). Las anotaciones
+    entre paréntesis se quitan como las demás líneas que no son de persona,
+    salvo que las `cedulas` de la celda alcancen para contarlas (cambio 11).
     """
     text = to_text(value).replace("\r\n", "\n").replace("\r", "\n")
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     if not lines:
         return None, False, False, False
-    persons, kinds, more = [], [], False
+    candidates, kinds, more = [], [], False
     for line in lines:
         base, had_more = _strip_more(line)
         more = more or had_more
         kind = classify_line(base)
         kinds.append(kind)
         if kind == PERSON:
-            persons.append(base)
+            candidates.append((base, bool(_ANNOTATION.match(base))))
+    plain = [base for base, annotation in candidates if not annotation]
+    annotations_out = bool(plain) and len(plain) < len(candidates) and cedulas < len(candidates)
+    persons = plain if annotations_out else [base for base, _ in candidates]
     not_person = [kind for kind in kinds if kind in (SUBJECT, CASE_REFERENCE, OTHER_CATEGORY)]
-    removed = bool(persons) and bool(not_person)                                   # RF-68
+    removed = bool(persons) and (bool(not_person) or annotations_out)              # RF-68
     only_subjects = not persons and bool(not_person) and all(
         kind in (SUBJECT, CASE_REFERENCE) for kind in not_person)                  # RF-28
     return persons, more, removed, only_subjects
+
+
+def _single_word(line: str) -> bool:
+    """Una línea de una sola palabra sin contar partículas (RF-99)."""
+    return len(_content(format_key(line, NAMES).split())) <= 1
+
+
+def _joined_suggestion(persons: list[str]) -> str:
+    """
+    RF-99: cada línea de una palabra se une a la línea de persona anterior (a
+    la siguiente, si es la primera); las partes, con " | ".
+    """
+    parts, carry = [], ""
+    for line in persons:
+        key = format_key(line, NAMES)
+        if _single_word(line) and parts:
+            parts[-1] = f"{parts[-1]} {key}"
+        elif _single_word(line):
+            carry = f"{carry} {key}".strip()
+        else:
+            parts.append(f"{carry} {key}".strip())
+            carry = ""
+    if carry:
+        parts.append(carry)
+    return " | ".join(parts)
 
 
 def _separation_decisions(decisions, name_col) -> dict:
@@ -301,15 +376,20 @@ def separate(df: pd.DataFrame, name_col: str = NAMES, id_col: str = IDENTIFICATI
     partes separadas por " | " separa la celda así (SEPARADA si hay tantas
     cédulas como partes, si no SEPARADA SIN CONFIRMAR, RF-48); ACEPTAR usa
     la sugerencia de una celda pendiente; MANTENER la deja en una fila, sin
-    pendiente.
+    pendiente. Cambio 11: las anotaciones entre paréntesis no crean filas
+    (salvo que las cédulas alcancen), una celda de varias líneas con alguna
+    de una sola palabra queda SIN SEPARAR con la sugerencia de unirla
+    (RF-99), y las filas de una celda a la que se le quitaron líneas llevan
+    la marca LINES_REMOVED (RF-68).
     """
     df = df.reset_index(drop=True)
     if "_row_id" not in df.columns:
         df["_row_id"] = range(len(df))
     has_names, has_ids = name_col in df.columns, id_col in df.columns
     empty_cell = (None, False, False, False)
-    cells = [_split_cell(value) for value in df[name_col]] if has_names else [empty_cell] * len(df)
     cedulas = [count_cedulas(value) for value in df[id_col]] if has_ids else [0] * len(df)
+    cells = ([_split_cell(value, count) for value, count in zip(df[name_col], cedulas)] if has_names
+             else [empty_cell] * len(df))
 
     singles = [(cell[0][0], count) for cell, count in zip(cells, cedulas) if cell[0] and len(cell[0]) == 1]
     known = {_fold(key) for key in (format_key(name, NAMES) for name, _ in singles) if _is_name_shape(key.split())}
@@ -336,6 +416,9 @@ def separate(df: pd.DataFrame, name_col: str = NAMES, id_col: str = IDENTIFICATI
                 persons, status = parts, SEPARATED
             else:                                                            # RF-25, RF-26, RF-69
                 pending[row_id], status, is_pending = suggestion, NOT_SEPARATED, True
+        elif len(persons) > 1 and any(_single_word(person) for person in persons):   # RF-99
+            pending[row_id], status, is_pending = _joined_suggestion(persons), NOT_SEPARATED, True
+            persons = ["\n".join(persons)]
         elif len(persons) > 1:                                               # RF-22
             status = SEPARATED if has_ids and cedulas[position] == len(persons) else UNCONFIRMED
         decided = False
@@ -369,7 +452,9 @@ def separate(df: pd.DataFrame, name_col: str = NAMES, id_col: str = IDENTIFICATI
         names.append(persons if (len(persons) > 1 or persons[0] != original) else [value])
         statuses.append(status)
         counts.append(len(persons))
-        row_marks = ({MORE_UNNAMED} if more else set()) | ({PENDING} if is_pending else set())
+        kept_whole = len(persons) == 1 and persons[0] == original                 # MANTENER: no se quitó nada
+        row_marks = (({MORE_UNNAMED} if more else set()) | ({PENDING} if is_pending else set())
+                     | ({LINES_REMOVED} if removed and not kept_whole else set()))   # RF-68 (cambio 11)
         for person in range(1, len(persons) + 1):
             if row_marks:
                 marks[(row_id, person)] = set(row_marks)
@@ -386,8 +471,13 @@ def separate(df: pd.DataFrame, name_col: str = NAMES, id_col: str = IDENTIFICATI
 
 
 def _several_names_line(line: str, cedulas: int) -> bool:
-    """Una sola línea que cuenta como "celda con varios nombres": más de 5 palabras sin partículas o 2 cédulas o más."""
-    return len(_content(format_key(line, NAMES).split())) > MAX_CONTENT_WORDS or cedulas >= 2
+    """
+    Una sola línea que cuenta como "celda con varios nombres": más de 5
+    palabras sin partículas, 2 cédulas o más, o partes con forma de nombre
+    unidas por " Y " o ";" (RF-100, cambio 11).
+    """
+    return (len(_content(format_key(line, NAMES).split())) > MAX_CONTENT_WORDS or cedulas >= 2
+            or _separator_division(line, _STRONG_SEPARATORS) is not None)
 
 
 def _glued(line: str, cedulas: int, has_ids: bool, known: set[str],
